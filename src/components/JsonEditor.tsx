@@ -1,19 +1,45 @@
-import React, { useRef, useEffect, useMemo } from "react";
+import React, { useRef, useEffect, useMemo, useState } from "react";
 import { EditorView, basicSetup } from "codemirror";
 import { json } from "@codemirror/lang-json";
 import { javascript } from "@codemirror/lang-javascript";
 import {
+  HighlightStyle,
+  syntaxHighlighting,
+  foldGutter,
+  indentOnInput,
+  bracketMatching,
+  foldKeymap,
+} from "@codemirror/language";
+import {
   autocompletion,
+  closeBrackets,
+  closeBracketsKeymap,
+  completionKeymap,
   type CompletionContext,
 } from "@codemirror/autocomplete";
 import { oneDark } from "@codemirror/theme-one-dark";
 import { EditorState } from "@codemirror/state";
+import { Prec } from "@codemirror/state";
 import { placeholder } from "@codemirror/view";
-import { linter, Diagnostic } from "@codemirror/lint";
+import { linter, lintKeymap, type Diagnostic } from "@codemirror/lint";
+import { tags as t } from "@lezer/highlight";
 import { useTranslation } from "react-i18next";
 import { Wand2 } from "lucide-react";
 import { toast } from "sonner";
 import { formatJSON } from "@/utils/formatters";
+import {
+  lineNumbers,
+  highlightActiveLineGutter,
+  highlightSpecialChars,
+  drawSelection,
+  dropCursor,
+  rectangularSelection,
+  crosshairCursor,
+  highlightActiveLine,
+  keymap,
+} from "@codemirror/view";
+import { history, defaultKeymap, historyKeymap } from "@codemirror/commands";
+import { highlightSelectionMatches, searchKeymap } from "@codemirror/search";
 
 interface JsonEditorProps {
   id?: string;
@@ -28,6 +54,105 @@ interface JsonEditorProps {
   showMinimap?: boolean; // 添加此属性以防未来使用
   completionMode?: "requestHookScript";
 }
+
+const requestHookScriptHighlight = HighlightStyle.define([
+  { tag: [t.keyword, t.modifier], color: "#FF7A90", fontWeight: "700" },
+  {
+    tag: [
+      t.function(t.variableName),
+      t.function(t.propertyName),
+      t.labelName,
+      t.definition(t.variableName),
+      t.definition(t.propertyName),
+      t.local(t.variableName),
+      t.variableName,
+      t.propertyName,
+      t.special(t.propertyName),
+      t.special(t.variableName),
+      t.standard(t.variableName),
+      t.name,
+      t.attributeName,
+      t.atom,
+      t.url,
+    ],
+    color: "#FFD479",
+  },
+  {
+    tag: [t.typeName, t.className, t.namespace, t.macroName],
+    color: "#D7B8FF",
+  },
+  {
+    tag: [t.string, t.special(t.string), t.inserted],
+    color: "#A8E6A3",
+  },
+  { tag: [t.number, t.bool, t.null, t.literal], color: "#FFBD6E" },
+  { tag: [t.regexp, t.escape], color: "#FF9670" },
+  { tag: [t.deleted, t.invalid], color: "#FF5D73" },
+  { tag: t.comment, color: "#BFA37A", fontStyle: "italic" },
+  {
+    tag: [t.operator, t.punctuation, t.separator, t.contentSeparator],
+    color: "#E2E5EC",
+  },
+]);
+
+const requestHookScriptTheme = EditorView.theme(
+  {
+    "&": {
+      backgroundColor: "#11141B",
+      color: "#F2F5FA",
+    },
+    ".cm-content": {
+      color: "#F2F5FA",
+      caretColor: "#FFD479",
+    },
+    ".cm-cursor, .cm-dropCursor": {
+      borderLeftColor: "#FFD479",
+    },
+    ".cm-selectionBackground, &.cm-focused .cm-selectionBackground": {
+      backgroundColor: "rgba(255, 212, 121, 0.30) !important",
+    },
+    ".cm-activeLine": {
+      backgroundColor: "rgba(255, 212, 121, 0.08) !important",
+    },
+    ".cm-activeLineGutter": {
+      backgroundColor: "rgba(255, 212, 121, 0.08) !important",
+    },
+    ".cm-gutters": {
+      color: "#9AA0AD",
+      backgroundColor: "#11141B",
+      borderRight: "1px solid rgba(154, 160, 173, 0.22)",
+    },
+  },
+  { dark: true },
+);
+
+// RequestHookScript 模式下不使用 basicSetup，避免默认 defaultHighlightStyle 引入蓝色 token
+const requestHookScriptSetup = [
+  lineNumbers(),
+  highlightActiveLineGutter(),
+  highlightSpecialChars(),
+  history(),
+  foldGutter(),
+  drawSelection(),
+  dropCursor(),
+  EditorState.allowMultipleSelections.of(true),
+  indentOnInput(),
+  bracketMatching(),
+  closeBrackets(),
+  rectangularSelection(),
+  crosshairCursor(),
+  highlightActiveLine(),
+  highlightSelectionMatches(),
+  keymap.of([
+    ...closeBracketsKeymap,
+    ...defaultKeymap,
+    ...searchKeymap,
+    ...historyKeymap,
+    ...foldKeymap,
+    ...completionKeymap,
+    ...lintKeymap,
+  ]),
+];
 
 function requestHookScriptCompletionSource(context: CompletionContext) {
   const word = context.matchBefore(/[A-Za-z_][A-Za-z0-9_\.]*/);
@@ -136,7 +261,7 @@ const JsonEditor: React.FC<JsonEditorProps> = ({
   value,
   onChange,
   placeholder: placeholderText = "",
-  darkMode = false,
+  darkMode,
   rows = 12,
   showValidation = true,
   language = "json",
@@ -146,6 +271,24 @@ const JsonEditor: React.FC<JsonEditorProps> = ({
   const { t } = useTranslation();
   const editorRef = useRef<HTMLDivElement>(null);
   const viewRef = useRef<EditorView | null>(null);
+  const [autoDarkMode, setAutoDarkMode] = useState(false);
+
+  const isRequestHookScript =
+    language === "javascript" && completionMode === "requestHookScript";
+  const effectiveDarkMode = darkMode ?? autoDarkMode;
+
+  useEffect(() => {
+    const root = document.documentElement;
+    const updateDarkMode = () => {
+      setAutoDarkMode(root.classList.contains("dark"));
+    };
+
+    updateDarkMode();
+    const observer = new MutationObserver(updateDarkMode);
+    observer.observe(root, { attributes: true, attributeFilter: ["class"] });
+
+    return () => observer.disconnect();
+  }, []);
 
   // JSON linter 函数
   const jsonLinter = useMemo(
@@ -159,10 +302,7 @@ const JsonEditor: React.FC<JsonEditorProps> = ({
 
         try {
           const parsed = JSON.parse(doc);
-          // 检查是否是JSON对象
-          if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
-            // 格式正确
-          } else {
+          if (!(parsed && typeof parsed === "object" && !Array.isArray(parsed))) {
             diagnostics.push({
               from: 0,
               to: doc.length,
@@ -171,7 +311,6 @@ const JsonEditor: React.FC<JsonEditorProps> = ({
             });
           }
         } catch (e) {
-          // 简单处理JSON解析错误
           const message =
             e instanceof SyntaxError ? e.message : t("jsonEditor.invalidJson");
           diagnostics.push({
@@ -190,10 +329,13 @@ const JsonEditor: React.FC<JsonEditorProps> = ({
   useEffect(() => {
     if (!editorRef.current) return;
 
-    // 创建编辑器扩展
     const minHeightPx = height ? undefined : Math.max(1, rows) * 18;
+    const heightValue = height
+      ? typeof height === "number"
+        ? `${height}px`
+        : height
+      : undefined;
 
-    // 使用 baseTheme 定义基础样式，优先级低于 oneDark，但可以正确响应主题
     const baseTheme = EditorView.baseTheme({
       ".cm-editor": {
         border: "1px solid hsl(var(--border))",
@@ -226,12 +368,6 @@ const JsonEditor: React.FC<JsonEditorProps> = ({
       },
     });
 
-    // 使用 theme 定义尺寸和字体样式
-    const heightValue = height
-      ? typeof height === "number"
-        ? `${height}px`
-        : height
-      : undefined;
     const sizingTheme = EditorView.theme({
       "&": heightValue
         ? { height: heightValue }
@@ -245,22 +381,20 @@ const JsonEditor: React.FC<JsonEditorProps> = ({
     });
 
     const extensions = [
-      basicSetup,
+      ...(isRequestHookScript ? requestHookScriptSetup : [basicSetup]),
       language === "javascript" ? javascript() : json(),
       placeholder(placeholderText || ""),
       baseTheme,
       sizingTheme,
       jsonLinter,
-      ...(language === "javascript" && completionMode === "requestHookScript"
+      ...(isRequestHookScript
         ? [
+            oneDark,
             autocompletion({
               override: [requestHookScriptCompletionSource],
             }),
-            EditorView.theme({
-              ".cm-content": {
-                filter: "saturate(62%) brightness(1.04)",
-              },
-            }),
+            requestHookScriptTheme,
+            Prec.high(syntaxHighlighting(requestHookScriptHighlight)),
           ]
         : []),
       EditorView.updateListener.of((update) => {
@@ -271,52 +405,15 @@ const JsonEditor: React.FC<JsonEditorProps> = ({
       }),
     ];
 
-    // 如果启用深色模式，添加深色主题
-    if (darkMode) {
+    if (!isRequestHookScript && effectiveDarkMode) {
       extensions.push(oneDark);
-      // 在 oneDark 之后强制覆盖边框样式
-      extensions.push(
-        EditorView.theme({
-          ".cm-editor": {
-            border: "1px solid hsl(var(--border))",
-            borderRadius: "0.5rem",
-            background: "transparent",
-          },
-          ".cm-editor.cm-focused": {
-            outline: "none",
-            borderColor: "hsl(var(--primary))",
-          },
-          ".cm-scroller": {
-            background: "transparent",
-          },
-          ".cm-gutters": {
-            background: "transparent",
-            borderRight: "1px solid hsl(var(--border))",
-            color: "hsl(var(--muted-foreground))",
-          },
-          ".cm-selectionBackground, .cm-content ::selection": {
-            background: "hsl(var(--primary) / 0.12)",
-          },
-          ".cm-selectionMatch": {
-            background: "hsl(var(--primary) / 0.08)",
-          },
-          ".cm-activeLine": {
-            background: "hsl(var(--primary) / 0.04)",
-          },
-          ".cm-activeLineGutter": {
-            background: "hsl(var(--primary) / 0.04)",
-          },
-        }),
-      );
     }
 
-    // 创建初始状态
     const state = EditorState.create({
       doc: value,
       extensions,
     });
 
-    // 创建编辑器视图
     const view = new EditorView({
       state,
       parent: editorRef.current,
@@ -324,14 +421,20 @@ const JsonEditor: React.FC<JsonEditorProps> = ({
 
     viewRef.current = view;
 
-    // 清理函数
     return () => {
       view.destroy();
       viewRef.current = null;
     };
-  }, [darkMode, rows, height, language, completionMode, jsonLinter]); // 依赖项中不包含 onChange 和 placeholder，避免不必要的重建
+  }, [
+    effectiveDarkMode,
+    rows,
+    height,
+    language,
+    completionMode,
+    isRequestHookScript,
+    jsonLinter,
+  ]);
 
-  // 当 value 从外部改变时更新编辑器内容
   useEffect(() => {
     if (viewRef.current && viewRef.current.state.doc.toString() !== value) {
       const transaction = viewRef.current.state.update({
@@ -345,7 +448,6 @@ const JsonEditor: React.FC<JsonEditorProps> = ({
     }
   }, [value]);
 
-  // 格式化处理函数
   const handleFormat = () => {
     if (!viewRef.current) return;
 
