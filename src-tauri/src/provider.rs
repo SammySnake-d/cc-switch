@@ -202,6 +202,28 @@ pub struct RequestBodyRewriter {
     pub rules: HashMap<String, Option<Value>>,
 }
 
+fn default_javascript_language() -> String {
+    "javascript".to_string()
+}
+
+/// 请求重写脚本配置（onRequest）
+///
+/// 目前仅用于 Codex 供应商，用于重写请求/响应（headers/body/status）以适配上游/代理限制。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RequestHookScript {
+    /// 是否启用
+    #[serde(default)]
+    pub enabled: bool,
+    /// 脚本语言（当前仅支持 javascript）
+    #[serde(default = "default_javascript_language")]
+    pub language: String,
+    /// 脚本代码（需要 eval 成对象，可包含 onRequest/onResponse）
+    pub code: String,
+    /// 预留：执行超时（毫秒）
+    #[serde(rename = "timeoutMs", skip_serializing_if = "Option::is_none")]
+    pub timeout_ms: Option<u64>,
+}
+
 /// 供应商元数据
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ProviderMeta {
@@ -250,8 +272,14 @@ pub struct ProviderMeta {
     #[serde(rename = "codexModelMapping", skip_serializing_if = "Option::is_none")]
     pub codex_model_mapping: Option<crate::proxy::codex_model_mapper::CodexModelMappingConfig>,
     /// 请求体重写器配置（用于过滤或覆盖 JSON 字段）
-    #[serde(rename = "requestBodyRewriter", skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "requestBodyRewriter",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub request_body_rewriter: Option<RequestBodyRewriter>,
+    /// 请求重写脚本（onRequest，脚本式修改 headers/body）
+    #[serde(rename = "requestHookScript", skip_serializing_if = "Option::is_none")]
+    pub request_hook_script: Option<RequestHookScript>,
 }
 
 impl ProviderManager {

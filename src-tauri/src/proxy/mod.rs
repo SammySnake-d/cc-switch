@@ -4,6 +4,7 @@
 
 pub mod body_filter;
 pub mod circuit_breaker;
+pub mod codex_model_mapper;
 pub mod error;
 pub mod error_mapper;
 pub(crate) mod failover_switch;
@@ -11,11 +12,11 @@ mod forwarder;
 pub mod handler_config;
 pub mod handler_context;
 mod handlers;
+pub(crate) mod header_filter;
 mod health;
 pub mod http_client;
 pub mod log_codes;
 pub mod model_mapper;
-pub mod codex_model_mapper;
 pub mod provider_router;
 pub mod providers;
 pub mod response_handler;

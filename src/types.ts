@@ -68,6 +68,14 @@ export interface UsageScript {
   };
 }
 
+// 请求/响应重写脚本（onRequest/onResponse）
+export interface RequestHookScript {
+  enabled: boolean;
+  language: "javascript";
+  code: string;
+  timeoutMs?: number;
+}
+
 // 单个套餐用量数据
 export interface UsageData {
   planName?: string; // 套餐名称（可选）
@@ -154,6 +162,8 @@ export interface ProviderMeta {
     enabled: boolean;
     rules: Record<string, any>; // null = 删除, 其他值 = 覆盖
   };
+  // 请求/响应重写脚本（onRequest/onResponse）（仅 Codex 供应商使用）
+  requestHookScript?: RequestHookScript;
 }
 
 // Skill 同步方式

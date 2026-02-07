@@ -17,6 +17,12 @@ export interface ProviderSwitchEvent {
   providerId: string;
 }
 
+export interface RequestHookScriptTestResult {
+  url: string;
+  headers: Record<string, string>;
+  body: any;
+}
+
 export const providersApi = {
   async getAll(appId: AppId): Promise<Record<string, Provider>> {
     return await invoke("get_providers", { app: appId });
@@ -63,6 +69,24 @@ export const providersApi = {
     appId: AppId,
   ): Promise<boolean> {
     return await invoke("update_providers_sort_order", { updates, app: appId });
+  },
+
+  async testRequestHookScript(
+    providerId: string,
+    appId: AppId,
+    scriptCode: string,
+    headers: Record<string, string>,
+    body: any,
+    endpoint?: string,
+  ): Promise<RequestHookScriptTestResult> {
+    return await invoke("testRequestHookScript", {
+      providerId,
+      app: appId,
+      scriptCode,
+      headers,
+      body,
+      endpoint,
+    });
   },
 
   async onSwitched(

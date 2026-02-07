@@ -20,8 +20,9 @@ mod prompt_files;
 mod provider;
 mod provider_defaults;
 mod proxy;
-mod session_manager;
+mod request_hook_script;
 mod services;
+mod session_manager;
 mod settings;
 mod store;
 mod tray;
@@ -817,6 +818,7 @@ pub fn run() {
             // usage query
             commands::queryProviderUsage,
             commands::testUsageScript,
+            commands::testRequestHookScript,
             // New MCP via config.json (SSOT)
             commands::get_mcp_config,
             commands::upsert_mcp_server_in_config,

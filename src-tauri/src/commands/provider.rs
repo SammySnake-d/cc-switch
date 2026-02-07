@@ -4,8 +4,16 @@ use tauri::State;
 use crate::app_config::AppType;
 use crate::error::AppError;
 use crate::provider::Provider;
+use crate::proxy::header_filter::is_header_blacklisted;
+use crate::proxy::providers::get_adapter;
+use crate::request_hook_script::{
+    apply_query_string_map_to_url, build_query_string_map_from_url, execute_on_request_script,
+    HookRequest, RequestHookContext, RequestHookProviderInfo,
+};
 use crate::services::{EndpointLatency, ProviderService, ProviderSortUpdate, SpeedtestService};
 use crate::store::AppState;
+use serde_json::Value;
+use std::collections::HashMap;
 use std::str::FromStr;
 
 /// 获取所有供应商
@@ -162,6 +170,105 @@ pub async fn testUsageScript(
     .map_err(|e| e.to_string())
 }
 
+#[derive(Debug, serde::Serialize)]
+pub struct RequestHookScriptTestResult {
+    pub url: String,
+    pub headers: HashMap<String, String>,
+    pub body: Value,
+}
+
+/// 测试请求重写脚本（onRequest）（使用当前编辑器中的脚本，不保存）
+#[allow(non_snake_case)]
+#[tauri::command]
+pub fn testRequestHookScript(
+    state: State<'_, AppState>,
+    #[allow(non_snake_case)] providerId: String,
+    app: String,
+    #[allow(non_snake_case)] scriptCode: String,
+    headers: HashMap<String, String>,
+    body: Value,
+    endpoint: Option<String>,
+) -> Result<RequestHookScriptTestResult, String> {
+    let app_type = AppType::from_str(&app).map_err(|e| e.to_string())?;
+    if app_type != AppType::Codex {
+        return Err("testRequestHookScript 目前仅支持 Codex".to_string());
+    }
+
+    let provider = state
+        .inner()
+        .db
+        .get_provider_by_id(&providerId, app_type.as_str())
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| format!("Provider not found: {providerId}"))?;
+
+    let adapter = get_adapter(&app_type);
+    let base_url = adapter
+        .extract_base_url(&provider)
+        .map_err(|e| e.to_string())?;
+    let endpoint = endpoint.unwrap_or_else(|| "/v1/responses".to_string());
+    let url = adapter.build_url(&base_url, &endpoint);
+
+    let incoming_headers: HashMap<String, String> = headers
+        .into_iter()
+        .map(|(k, v)| (k.to_ascii_lowercase(), v))
+        .collect();
+
+    let request_headers: HashMap<String, String> = incoming_headers
+        .iter()
+        .filter_map(|(k, v)| {
+            if is_header_blacklisted(k) {
+                None
+            } else {
+                Some((k.clone(), v.clone()))
+            }
+        })
+        .collect();
+
+    let context = RequestHookContext {
+        app,
+        method: "POST".to_string(),
+        path: endpoint.split('?').next().unwrap_or(&endpoint).to_string(),
+        endpoint: endpoint.clone(),
+        url: url.clone(),
+        provider: RequestHookProviderInfo {
+            id: provider.id.clone(),
+            name: provider.name.clone(),
+        },
+        incoming_headers,
+    };
+
+    let original_request = HookRequest {
+        headers: request_headers,
+        queries: build_query_string_map_from_url(&url),
+        body,
+    };
+
+    let output_request = execute_on_request_script(&scriptCode, &context, &original_request)
+        .map_err(|e| e.to_string())?
+        .unwrap_or(original_request);
+
+    let filtered_headers: HashMap<String, String> = output_request
+        .headers
+        .into_iter()
+        .filter_map(|(k, v)| {
+            if is_header_blacklisted(&k) {
+                None
+            } else {
+                Some((k, v))
+            }
+        })
+        .collect();
+
+    let output_url = apply_query_string_map_to_url(&url, &output_request.queries)
+        .map_err(|e| format!("脚本输出 queries 无效: {e}"))?;
+
+    Ok(RequestHookScriptTestResult {
+        url: output_url,
+        headers: filtered_headers,
+        body: output_request.body,
+    })
+}
+
 /// 读取当前生效的配置内容
 #[tauri::command]
 pub fn read_live_provider_settings(app: String) -> Result<serde_json::Value, String> {
@@ -247,7 +354,6 @@ pub fn update_providers_sort_order(
 // ============================================================================
 
 use crate::provider::UniversalProvider;
-use std::collections::HashMap;
 use tauri::{AppHandle, Emitter};
 
 /// 统一供应商同步完成事件的 payload

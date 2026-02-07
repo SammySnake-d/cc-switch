@@ -5,9 +5,15 @@
 use super::{
     handler_config::UsageParserConfig,
     handler_context::{RequestContext, StreamingTimeoutConfig},
+    providers::get_adapter,
     server::ProxyState,
     usage::parser::TokenUsage,
     ProxyError,
+};
+use crate::app_config::AppType;
+use crate::request_hook_script::{
+    build_header_string_map, execute_on_response_script, HookResponse, RequestHookContext,
+    RequestHookProviderInfo,
 };
 use axum::response::{IntoResponse, Response};
 use bytes::Bytes;
@@ -91,7 +97,7 @@ pub async fn handle_non_streaming(
     state: &ProxyState,
     parser_config: &UsageParserConfig,
 ) -> Result<Response, ProxyError> {
-    let response_headers = response.headers().clone();
+    let mut response_headers = response.headers().clone();
     let status = response.status();
 
     // 读取响应体
@@ -99,6 +105,9 @@ pub async fn handle_non_streaming(
         log::error!("[{}] 读取响应失败: {e}", ctx.tag);
         ProxyError::ForwardFailed(format!("Failed to read response body: {e}"))
     })?;
+    let mut final_body_bytes = body_bytes.to_vec();
+    let mut final_status = status;
+
     log::debug!(
         "[{}] 已接收上游响应体: status={}, bytes={}, headers={}",
         ctx.tag,
@@ -172,13 +181,26 @@ pub async fn handle_non_streaming(
         );
     }
 
+    // onResponse 脚本拦截（仅 Codex 非流式）
+    maybe_apply_codex_on_response_hook(
+        ctx,
+        &mut final_status,
+        &mut response_headers,
+        &mut final_body_bytes,
+    );
+
     // 构建响应
-    let mut builder = axum::response::Response::builder().status(status);
+    let mut builder = axum::response::Response::builder().status(final_status);
     for (key, value) in response_headers.iter() {
+        if key.as_str().eq_ignore_ascii_case("content-length")
+            || key.as_str().eq_ignore_ascii_case("transfer-encoding")
+        {
+            continue;
+        }
         builder = builder.header(key, value);
     }
 
-    let body = axum::body::Body::from(body_bytes);
+    let body = axum::body::Body::from(final_body_bytes);
     builder.body(body).map_err(|e| {
         log::error!("[{}] 构建响应失败: {e}", ctx.tag);
         ProxyError::Internal(format!("Failed to build response: {e}"))
@@ -199,6 +221,140 @@ pub async fn process_response(
     } else {
         handle_non_streaming(response, ctx, state, parser_config).await
     }
+}
+
+fn maybe_apply_codex_on_response_hook(
+    ctx: &RequestContext,
+    status: &mut reqwest::StatusCode,
+    headers: &mut HeaderMap,
+    body: &mut Vec<u8>,
+) {
+    if ctx.app_type != AppType::Codex {
+        return;
+    }
+
+    let Some(script) = ctx
+        .provider
+        .meta
+        .as_ref()
+        .and_then(|m| m.request_hook_script.as_ref())
+    else {
+        return;
+    };
+
+    if !script.enabled || script.code.trim().is_empty() {
+        return;
+    }
+
+    if !script.language.eq_ignore_ascii_case("javascript") {
+        log::warn!(
+            "[Codex] [Hook] 不支持的脚本语言: {}（当前仅支持 javascript）",
+            script.language
+        );
+        return;
+    }
+
+    let adapter = get_adapter(&ctx.app_type);
+    let base_url = match adapter.extract_base_url(&ctx.provider) {
+        Ok(v) => v,
+        Err(e) => {
+            log::warn!("[Codex] [Hook] 读取 provider base_url 失败，已忽略 onResponse: {e}");
+            return;
+        }
+    };
+    let endpoint = if ctx.request_endpoint.is_empty() {
+        "/responses"
+    } else {
+        &ctx.request_endpoint
+    };
+    let path = endpoint.split('?').next().unwrap_or(endpoint).to_string();
+    let url = adapter.build_url(&base_url, endpoint);
+
+    let context = RequestHookContext {
+        app: ctx.app_type_str.to_string(),
+        method: "POST".to_string(),
+        path,
+        endpoint: endpoint.to_string(),
+        url,
+        provider: RequestHookProviderInfo {
+            id: ctx.provider.id.clone(),
+            name: ctx.provider.name.clone(),
+        },
+        incoming_headers: ctx.incoming_headers.clone(),
+    };
+
+    let body_value = serde_json::from_slice::<Value>(body)
+        .unwrap_or_else(|_| Value::String(String::from_utf8_lossy(body).to_string()));
+    let response_view = HookResponse {
+        code: status.as_u16(),
+        headers: build_header_string_map(headers),
+        body: body_value,
+    };
+
+    let output = match execute_on_response_script(&script.code, &context, &response_view) {
+        Ok(v) => v,
+        Err(e) => {
+            log::warn!("[Codex] [Hook] onResponse 执行失败，已忽略: {e}");
+            return;
+        }
+    };
+
+    let Some(new_view) = output else {
+        return;
+    };
+
+    let new_status = match reqwest::StatusCode::from_u16(new_view.code) {
+        Ok(v) => v,
+        Err(e) => {
+            log::warn!(
+                "[Codex] [Hook] onResponse 输出 status 无效，已忽略: {} ({e})",
+                new_view.code
+            );
+            return;
+        }
+    };
+
+    let mut new_headers = HeaderMap::new();
+    for (key, value) in new_view.headers {
+        let name = match reqwest::header::HeaderName::from_bytes(key.as_bytes()) {
+            Ok(v) => v,
+            Err(e) => {
+                log::warn!("[Codex] [Hook] onResponse 输出 header name 无效，已忽略: {key} ({e})");
+                return;
+            }
+        };
+        let value = match reqwest::header::HeaderValue::from_str(&value) {
+            Ok(v) => v,
+            Err(e) => {
+                log::warn!("[Codex] [Hook] onResponse 输出 header value 无效，已忽略: {key} ({e})");
+                return;
+            }
+        };
+        new_headers.insert(name, value);
+    }
+
+    let body_bytes = match new_view.body {
+        Value::String(s) => s.into_bytes(),
+        value => match serde_json::to_vec(&value) {
+            Ok(v) => {
+                if !new_headers.contains_key("content-type") {
+                    new_headers.insert(
+                        "content-type",
+                        reqwest::header::HeaderValue::from_static("application/json"),
+                    );
+                }
+                v
+            }
+            Err(e) => {
+                log::warn!("[Codex] [Hook] onResponse 输出 body 无法序列化，已忽略: {e}");
+                return;
+            }
+        },
+    };
+
+    *status = new_status;
+    *headers = new_headers;
+    *body = body_bytes;
 }
 
 // ============================================================================

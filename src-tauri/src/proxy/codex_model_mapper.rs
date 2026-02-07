@@ -36,25 +36,25 @@ impl CodexModelMappingConfig {
     /// 根据模型和effort查找映射
     ///
     /// 优先级：
-    /// 1. model_map (简单模型映射) - 匹配模型ID后直接映射，不管有没有 effort
-    /// 2. effort_map (模型+effort 组合) - 更细粒度的覆盖，仅当简单映射未匹配时使用
+    /// 1. effort_map (模型+effort 组合) - 更细粒度匹配，优先级更高
+    /// 2. model_map (简单模型映射) - effort 未命中时回退
     /// 3. 无映射，返回原模型
     pub fn map_model(&self, original_model: &str, effort: Option<&str>) -> (String, bool) {
         if !self.enabled {
             return (original_model.to_string(), false);
         }
 
-        // 1. 优先尝试简单模型映射
-        if let Some(mapped) = self.model_map.get(original_model) {
-            return (mapped.clone(), true);
-        }
-
-        // 2. 如果简单映射没匹配，尝试 effort 组合映射（更细粒度）
+        // 1. 优先尝试 effort 组合映射（更细粒度）
         if let Some(eff) = effort {
             let key = format!("{}@{}", original_model, eff);
             if let Some(mapped) = self.effort_map.get(&key) {
                 return (mapped.clone(), true);
             }
+        }
+
+        // 2. 回退到简单模型映射
+        if let Some(mapped) = self.model_map.get(original_model) {
+            return (mapped.clone(), true);
         }
 
         // 3. 无映射
@@ -207,7 +207,10 @@ mod tests {
         model_map.insert("gpt-5.2-codex".to_string(), "simple-mapped".to_string());
 
         let mut effort_map = HashMap::new();
-        effort_map.insert("gpt-5.2-codex@xhigh".to_string(), "effort-mapped".to_string());
+        effort_map.insert(
+            "gpt-5.2-codex@xhigh".to_string(),
+            "effort-mapped".to_string(),
+        );
 
         let provider = create_provider_with_mapping(model_map, effort_map);
         let body = json!({
@@ -228,7 +231,10 @@ mod tests {
         model_map.insert("gpt-5.2-codex".to_string(), "simple-mapped".to_string());
 
         let mut effort_map = HashMap::new();
-        effort_map.insert("gpt-5.2-codex@xhigh".to_string(), "effort-mapped".to_string());
+        effort_map.insert(
+            "gpt-5.2-codex@xhigh".to_string(),
+            "effort-mapped".to_string(),
+        );
 
         let provider = create_provider_with_mapping(model_map, effort_map);
         let body = json!({

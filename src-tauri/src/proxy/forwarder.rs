@@ -6,70 +6,23 @@ use super::{
     body_filter::filter_private_params_with_whitelist,
     error::*,
     failover_switch::FailoverSwitchManager,
+    header_filter::is_header_blacklisted,
     provider_router::ProviderRouter,
     providers::{get_adapter, ProviderAdapter, ProviderType},
     thinking_rectifier::{rectify_anthropic_request, should_rectify_thinking_signature},
     types::{ProxyStatus, RectifierConfig},
     ProxyError,
 };
+use crate::request_hook_script::{
+    apply_query_string_map_to_url, build_header_string_map, build_query_string_map_from_url,
+    execute_on_request_script, HookRequest, RequestHookContext, RequestHookProviderInfo,
+};
 use crate::{app_config::AppType, provider::Provider};
 use reqwest::Response;
 use serde_json::Value;
+use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;
-
-/// Headers 黑名单 - 不透传到上游的 Headers
-///
-/// 精简版黑名单，只过滤必须覆盖或可能导致问题的 header
-/// 参考成功透传的请求，保留更多原始 header
-///
-/// 注意：客户端 IP 类（x-forwarded-for, x-real-ip）默认透传
-const HEADER_BLACKLIST: &[&str] = &[
-    // 认证类（会被覆盖）
-    "authorization",
-    "x-api-key",
-    "x-goog-api-key",
-    // 连接类（由 HTTP 客户端管理）
-    "host",
-    "content-length",
-    "transfer-encoding",
-    // 编码类（会被覆盖为 identity）
-    "accept-encoding",
-    // 代理转发类（保留 x-forwarded-for 和 x-real-ip）
-    "x-forwarded-host",
-    "x-forwarded-port",
-    "x-forwarded-proto",
-    "forwarded",
-    // CDN/云服务商特定头
-    "cf-connecting-ip",
-    "cf-ipcountry",
-    "cf-ray",
-    "cf-visitor",
-    "true-client-ip",
-    "fastly-client-ip",
-    "x-azure-clientip",
-    "x-azure-fdid",
-    "x-azure-ref",
-    "akamai-origin-hop",
-    "x-akamai-config-log-detail",
-    // 请求追踪类
-    "x-request-id",
-    "x-correlation-id",
-    "x-trace-id",
-    "x-amzn-trace-id",
-    "x-b3-traceid",
-    "x-b3-spanid",
-    "x-b3-parentspanid",
-    "x-b3-sampled",
-    "traceparent",
-    "tracestate",
-    // anthropic 特定头单独处理，避免重复
-    "anthropic-beta",
-    "anthropic-version",
-    // 客户端 IP 单独处理（默认透传）
-    "x-forwarded-for",
-    "x-real-ip",
-];
 
 /// 应用重写规则到 JSON 对象
 /// path 支持点分隔（如 "text.verbosity"），value 为 None 表示删除该字段，Some(v) 表示覆盖
@@ -598,7 +551,7 @@ impl RequestForwarder {
             };
 
         // 使用适配器构建 URL
-        let url = adapter.build_url(&base_url, effective_endpoint);
+        let mut url = adapter.build_url(&base_url, effective_endpoint);
 
         // 应用模型映射（根据适配器类型选择不同的映射器）
         let (mapped_body, _original_model, _mapped_model) = if adapter.name() == "Codex" {
@@ -621,11 +574,139 @@ impl RequestForwarder {
         let mut filtered_body = filter_private_params_with_whitelist(request_body, &[]);
 
         // 应用请求体重写器（用户自定义字段过滤/覆盖）
-        if let Some(rewriter) = provider.meta.as_ref().and_then(|m| m.request_body_rewriter.as_ref()) {
+        if let Some(rewriter) = provider
+            .meta
+            .as_ref()
+            .and_then(|m| m.request_body_rewriter.as_ref())
+        {
             if rewriter.enabled {
                 if let Some(obj) = filtered_body.as_object_mut() {
                     for (path, value) in &rewriter.rules {
                         apply_rewrite_rule(obj, path, value.clone());
+                    }
+                }
+            }
+        }
+
+        // 请求重写脚本（onRequest，仅 Codex）
+        //
+        // - 允许用户像抓包工具一样自由修改 headers/body
+        // - 失败策略：线上降级继续（忽略脚本输出）
+        let mut scripted_upstream_headers: Option<axum::http::HeaderMap> = None;
+        if adapter.name() == "Codex" {
+            if let Some(script) = provider
+                .meta
+                .as_ref()
+                .and_then(|m| m.request_hook_script.as_ref())
+            {
+                if script.enabled && !script.code.trim().is_empty() {
+                    if !script.language.eq_ignore_ascii_case("javascript") {
+                        log::warn!(
+                            "[Codex] [Hook] 不支持的脚本语言: {}（当前仅支持 javascript）",
+                            script.language
+                        );
+                        // 忽略脚本
+                    } else {
+                        let incoming_headers = build_header_string_map(headers);
+                        let request_headers: HashMap<String, String> = incoming_headers
+                            .iter()
+                            .filter_map(|(k, v)| {
+                                if is_header_blacklisted(k) {
+                                    None
+                                } else {
+                                    Some((k.clone(), v.clone()))
+                                }
+                            })
+                            .collect();
+
+                        let context = RequestHookContext {
+                            app: "codex".to_string(),
+                            method: "POST".to_string(),
+                            path: effective_endpoint.to_string(),
+                            endpoint: effective_endpoint.to_string(),
+                            url: url.clone(),
+                            provider: RequestHookProviderInfo {
+                                id: provider.id.clone(),
+                                name: provider.name.clone(),
+                            },
+                            incoming_headers,
+                        };
+
+                        let original_view = HookRequest {
+                            headers: request_headers,
+                            queries: build_query_string_map_from_url(&url),
+                            body: filtered_body.clone(),
+                        };
+
+                        match execute_on_request_script(&script.code, &context, &original_view) {
+                            Ok(Some(mut new_view)) => {
+                                // 再次过滤私有参数，防止脚本重新注入 _ 前缀字段泄露
+                                let new_body =
+                                    filter_private_params_with_whitelist(new_view.body, &[]);
+
+                                // 应用 header 黑名单边界
+                                new_view
+                                    .headers
+                                    .retain(|k, _| !is_header_blacklisted(k.as_str()));
+
+                                let rewritten_url = match apply_query_string_map_to_url(
+                                    &url,
+                                    &new_view.queries,
+                                ) {
+                                    Ok(v) => Some(v),
+                                    Err(e) => {
+                                        log::warn!(
+                                                "[Codex] [Hook] 请求重写脚本输出 query 无效，已忽略: {e}"
+                                            );
+                                        None
+                                    }
+                                };
+
+                                if let Some(rewritten_url) = rewritten_url {
+                                    // 构建将要发往上游的 HeaderMap
+                                    let mut upstream_headers = axum::http::HeaderMap::new();
+                                    let mut build_failed = None;
+                                    for (k, v) in new_view.headers {
+                                        let name = match axum::http::HeaderName::from_bytes(
+                                            k.as_bytes(),
+                                        ) {
+                                            Ok(n) => n,
+                                            Err(e) => {
+                                                build_failed =
+                                                    Some(format!("非法 header name: {k} ({e})"));
+                                                break;
+                                            }
+                                        };
+                                        let value = match axum::http::HeaderValue::from_str(&v) {
+                                            Ok(v) => v,
+                                            Err(e) => {
+                                                build_failed = Some(format!(
+                                                    "非法 header value: {k}={v} ({e})"
+                                                ));
+                                                break;
+                                            }
+                                        };
+                                        upstream_headers.insert(name, value);
+                                    }
+
+                                    if let Some(err) = build_failed {
+                                        log::warn!(
+                                            "[Codex] [Hook] 请求重写脚本输出无效，已忽略: {err}"
+                                        );
+                                    } else {
+                                        filtered_body = new_body;
+                                        url = rewritten_url;
+                                        scripted_upstream_headers = Some(upstream_headers);
+                                    }
+                                }
+                            }
+                            Ok(None) => {
+                                // undefined/null：放行（不修改）
+                            }
+                            Err(e) => {
+                                log::warn!("[Codex] [Hook] 请求重写脚本执行失败，已忽略: {e}");
+                            }
+                        }
                     }
                 }
             }
@@ -643,15 +724,20 @@ impl RequestForwarder {
             request = request.timeout(self.non_streaming_timeout);
         }
 
-        // 过滤黑名单 Headers，保护隐私并避免冲突
-        for (key, value) in headers {
-            if HEADER_BLACKLIST
-                .iter()
-                .any(|h| key.as_str().eq_ignore_ascii_case(h))
-            {
-                continue;
+        // 写入 Headers：
+        // - 若脚本已输出 upstream headers，则以脚本为准
+        // - 否则按默认逻辑透传（过滤黑名单）
+        if let Some(scripted) = scripted_upstream_headers.as_ref() {
+            for (key, value) in scripted {
+                request = request.header(key, value);
             }
-            request = request.header(key, value);
+        } else {
+            for (key, value) in headers {
+                if is_header_blacklisted(key.as_str()) {
+                    continue;
+                }
+                request = request.header(key, value);
+            }
         }
 
         // 处理 anthropic-beta Header（仅 Claude）

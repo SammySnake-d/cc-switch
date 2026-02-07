@@ -59,8 +59,9 @@ pub async fn handle_messages(
     headers: axum::http::HeaderMap,
     Json(body): Json<Value>,
 ) -> Result<axum::response::Response, ProxyError> {
-    let mut ctx =
-        RequestContext::new(&state, &body, &headers, AppType::Claude, "Claude", "claude").await?;
+    let mut ctx = RequestContext::new(&state, &body, &headers, AppType::Claude, "Claude", "claude")
+        .await?
+        .with_request_endpoint("/v1/messages");
 
     let is_stream = body
         .get("stream")
@@ -272,8 +273,9 @@ pub async fn handle_chat_completions(
     headers: axum::http::HeaderMap,
     Json(body): Json<Value>,
 ) -> Result<axum::response::Response, ProxyError> {
-    let mut ctx =
-        RequestContext::new(&state, &body, &headers, AppType::Codex, "Codex", "codex").await?;
+    let mut ctx = RequestContext::new(&state, &body, &headers, AppType::Codex, "Codex", "codex")
+        .await?
+        .with_request_endpoint("/chat/completions");
 
     let is_stream = body
         .get("stream")
@@ -313,8 +315,9 @@ pub async fn handle_responses(
     headers: axum::http::HeaderMap,
     Json(body): Json<Value>,
 ) -> Result<axum::response::Response, ProxyError> {
-    let mut ctx =
-        RequestContext::new(&state, &body, &headers, AppType::Codex, "Codex", "codex").await?;
+    let mut ctx = RequestContext::new(&state, &body, &headers, AppType::Codex, "Codex", "codex")
+        .await?
+        .with_request_endpoint("/responses");
 
     let is_stream = body
         .get("stream")
@@ -369,6 +372,7 @@ pub async fn handle_gemini(
         .path_and_query()
         .map(|pq| pq.as_str())
         .unwrap_or(uri.path());
+    ctx = ctx.with_request_endpoint(endpoint);
 
     let is_stream = body
         .get("stream")

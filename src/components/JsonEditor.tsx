@@ -2,6 +2,10 @@ import React, { useRef, useEffect, useMemo } from "react";
 import { EditorView, basicSetup } from "codemirror";
 import { json } from "@codemirror/lang-json";
 import { javascript } from "@codemirror/lang-javascript";
+import {
+  autocompletion,
+  type CompletionContext,
+} from "@codemirror/autocomplete";
 import { oneDark } from "@codemirror/theme-one-dark";
 import { EditorState } from "@codemirror/state";
 import { placeholder } from "@codemirror/view";
@@ -22,6 +26,110 @@ interface JsonEditorProps {
   language?: "json" | "javascript";
   height?: string | number;
   showMinimap?: boolean; // 添加此属性以防未来使用
+  completionMode?: "requestHookScript";
+}
+
+function requestHookScriptCompletionSource(context: CompletionContext) {
+  const word = context.matchBefore(/[A-Za-z_][A-Za-z0-9_\.]*/);
+  if (!word && !context.explicit) return null;
+
+  const text = word?.text ?? "";
+  const pos = context.pos;
+  const from = word?.from ?? pos;
+
+  const baseOptions = [
+    {
+      label: "context",
+      type: "variable",
+      info: "onRequest/onResponse 的上下文（只读）",
+    },
+    {
+      label: "request",
+      type: "variable",
+      info: "即将发往上游的请求视图（onRequest，可修改）",
+    },
+    {
+      label: "response",
+      type: "variable",
+      info: "返回给客户端的响应视图（onResponse，可修改）",
+    },
+    {
+      label: 'delete request.headers["x-codex-turn-metadata"];',
+      type: "snippet",
+      apply: 'delete request.headers["x-codex-turn-metadata"];',
+      info: "删除可能包含非 ASCII 的请求头（例如含中文路径）",
+    },
+    {
+      label: "return request;",
+      type: "snippet",
+      apply: "return request;",
+      info: "放行请求（必须 return request）",
+    },
+    {
+      label: "return response;",
+      type: "snippet",
+      apply: "return response;",
+      info: "放行响应（必须 return response）",
+    },
+  ];
+
+  const contextPrefix = "context.";
+  if (text.startsWith(contextPrefix)) {
+    const propPrefix = text.slice(contextPrefix.length);
+    const options = [
+      { label: "app", type: "property", info: "应用 ID（如 codex）" },
+      { label: "method", type: "property", info: "请求方法（如 POST）" },
+      { label: "path", type: "property", info: "请求路径（不含域名）" },
+      { label: "endpoint", type: "property", info: "端点（如 /v1/responses）" },
+      { label: "url", type: "property", info: "将要请求的 URL" },
+      { label: "provider", type: "property", info: "当前 Provider 信息" },
+      {
+        label: "incomingHeaders",
+        type: "property",
+        info: "入站原始请求头（只读）",
+      },
+    ].filter((o) => o.label.startsWith(propPrefix));
+    return {
+      from: (word?.from ?? pos) + contextPrefix.length,
+      options,
+      validFor: /^[A-Za-z_][A-Za-z0-9_]*$/,
+    };
+  }
+
+  const requestPrefix = "request.";
+  if (text.startsWith(requestPrefix)) {
+    const propPrefix = text.slice(requestPrefix.length);
+    const options = [
+      { label: "headers", type: "property", info: "最终将发往上游的请求头" },
+      { label: "queries", type: "property", info: "最终将发往上游的查询参数" },
+      { label: "body", type: "property", info: "最终将发往上游的请求体" },
+    ].filter((o) => o.label.startsWith(propPrefix));
+    return {
+      from: (word?.from ?? pos) + requestPrefix.length,
+      options,
+      validFor: /^[A-Za-z_][A-Za-z0-9_]*$/,
+    };
+  }
+
+  const responsePrefix = "response.";
+  if (text.startsWith(responsePrefix)) {
+    const propPrefix = text.slice(responsePrefix.length);
+    const options = [
+      { label: "code", type: "property", info: "最终返回给客户端的状态码" },
+      { label: "headers", type: "property", info: "最终返回给客户端的响应头" },
+      { label: "body", type: "property", info: "最终返回给客户端的响应体" },
+    ].filter((o) => o.label.startsWith(propPrefix));
+    return {
+      from: (word?.from ?? pos) + responsePrefix.length,
+      options,
+      validFor: /^[A-Za-z_][A-Za-z0-9_]*$/,
+    };
+  }
+
+  return {
+    from,
+    options: baseOptions.filter((o) => o.label.startsWith(text)),
+  };
 }
 
 const JsonEditor: React.FC<JsonEditorProps> = ({
@@ -33,6 +141,7 @@ const JsonEditor: React.FC<JsonEditorProps> = ({
   showValidation = true,
   language = "json",
   height,
+  completionMode,
 }) => {
   const { t } = useTranslation();
   const editorRef = useRef<HTMLDivElement>(null);
@@ -142,6 +251,13 @@ const JsonEditor: React.FC<JsonEditorProps> = ({
       baseTheme,
       sizingTheme,
       jsonLinter,
+      ...(language === "javascript" && completionMode === "requestHookScript"
+        ? [
+            autocompletion({
+              override: [requestHookScriptCompletionSource],
+            }),
+          ]
+        : []),
       EditorView.updateListener.of((update) => {
         if (update.docChanged) {
           const newValue = update.state.doc.toString();
@@ -208,7 +324,7 @@ const JsonEditor: React.FC<JsonEditorProps> = ({
       view.destroy();
       viewRef.current = null;
     };
-  }, [darkMode, rows, height, language, jsonLinter]); // 依赖项中不包含 onChange 和 placeholder，避免不必要的重建
+  }, [darkMode, rows, height, language, completionMode, jsonLinter]); // 依赖项中不包含 onChange 和 placeholder，避免不必要的重建
 
   // 当 value 从外部改变时更新编辑器内容
   useEffect(() => {

@@ -62,6 +62,11 @@ import {
   type RequestBodyRewriterConfig as RequestBodyRewriterConfigType,
 } from "./RequestBodyRewriterConfig";
 import {
+  RequestHookScriptConfig,
+  defaultRequestHookScriptConfig,
+  type RequestHookScriptConfig as RequestHookScriptConfigType,
+} from "./RequestHookScriptConfig";
+import {
   useProviderCategory,
   useApiKeyState,
   useBaseUrlState,
@@ -211,6 +216,13 @@ export function ProviderForm({
     useState<RequestBodyRewriterConfigType>(() => {
       if (appId !== "codex") return defaultRequestBodyRewriterConfig;
       return initialData?.meta?.requestBodyRewriter ?? defaultRequestBodyRewriterConfig;
+    });
+
+  // 请求重写脚本（onRequest）配置状态
+  const [requestHookScript, setRequestHookScript] =
+    useState<RequestHookScriptConfigType>(() => {
+      if (appId !== "codex") return defaultRequestHookScriptConfig;
+      return initialData?.meta?.requestHookScript ?? defaultRequestHookScriptConfig;
     });
 
   // 使用 category hook
@@ -977,6 +989,11 @@ export function ProviderForm({
         appId === "codex" && requestBodyRewriter.enabled
           ? requestBodyRewriter
           : undefined,
+      // 请求重写脚本（onRequest）（仅 Codex 供应商使用）
+      requestHookScript:
+        appId === "codex" && requestHookScript.enabled
+          ? requestHookScript
+          : undefined,
     };
 
     onSubmit(payload);
@@ -1543,6 +1560,16 @@ export function ProviderForm({
           <RequestBodyRewriterConfig
             config={requestBodyRewriter}
             onConfigChange={setRequestBodyRewriter}
+          />
+        )}
+
+        {/* 请求重写脚本（onRequest，仅 Codex） */}
+        {appId === "codex" && (
+          <RequestHookScriptConfig
+            appId={appId}
+            providerId={providerId}
+            config={requestHookScript}
+            onConfigChange={setRequestHookScript}
           />
         )}
 

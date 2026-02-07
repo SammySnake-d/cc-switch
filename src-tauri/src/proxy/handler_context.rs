@@ -11,7 +11,9 @@ use crate::proxy::{
     types::{AppProxyConfig, RectifierConfig},
     ProxyError,
 };
+use crate::request_hook_script::build_header_string_map;
 use axum::http::HeaderMap;
+use std::collections::HashMap;
 use std::time::Instant;
 
 /// 流式超时配置
@@ -52,13 +54,16 @@ pub struct RequestContext {
     pub tag: &'static str,
     /// 应用类型字符串（如 "claude"、"codex"、"gemini"）
     pub app_type_str: &'static str,
-    /// 应用类型（预留，目前通过 app_type_str 使用）
-    #[allow(dead_code)]
+    /// 应用类型
     pub app_type: AppType,
     /// Session ID（从客户端请求提取或新生成）
     pub session_id: String,
     /// 整流器配置
     pub rectifier_config: RectifierConfig,
+    /// 入站请求头（小写 key，逗号连接多值）
+    pub incoming_headers: HashMap<String, String>,
+    /// 本次请求端点（用于 Hook 上下文）
+    pub request_endpoint: String,
 }
 
 impl RequestContext {
@@ -107,6 +112,7 @@ impl RequestContext {
         // 提取 Session ID
         let session_result = extract_session_id(headers, body, app_type_str);
         let session_id = session_result.session_id.clone();
+        let incoming_headers = build_header_string_map(headers);
 
         log::debug!(
             "[{}] Session ID: {} (from {:?}, client_provided: {})",
@@ -156,6 +162,8 @@ impl RequestContext {
             app_type,
             session_id,
             rectifier_config,
+            incoming_headers,
+            request_endpoint: String::new(),
         })
     }
 
@@ -177,6 +185,12 @@ impl RequestContext {
             .unwrap_or("unknown")
             .to_string();
 
+        self
+    }
+
+    /// 设置本次请求端点（用于 hook 上下文）
+    pub fn with_request_endpoint(mut self, endpoint: &str) -> Self {
+        self.request_endpoint = endpoint.to_string();
         self
     }
 
