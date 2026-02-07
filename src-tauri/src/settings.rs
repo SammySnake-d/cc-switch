@@ -125,6 +125,18 @@ pub struct AppSettings {
     /// - Linux: "gnome-terminal" | "konsole" | "xfce4-terminal" | "alacritty" | "kitty" | "ghostty"
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub preferred_terminal: Option<String>,
+
+    // ===== WebDAV 备份设置 =====
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub webdav_url: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub webdav_username: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub webdav_password: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub webdav_remote_dir: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub webdav_file_name: Option<String>,
 }
 
 fn default_show_in_tray() -> bool {
@@ -156,6 +168,11 @@ impl Default for AppSettings {
             current_provider_opencode: None,
             skill_sync_method: SyncMethod::default(),
             preferred_terminal: None,
+            webdav_url: None,
+            webdav_username: None,
+            webdav_password: None,
+            webdav_remote_dir: None,
+            webdav_file_name: None,
         }
     }
 }
@@ -204,6 +221,39 @@ impl AppSettings {
             .as_ref()
             .map(|s| s.trim())
             .filter(|s| matches!(*s, "en" | "zh" | "ja"))
+            .map(|s| s.to_string());
+
+        self.webdav_url = self
+            .webdav_url
+            .as_ref()
+            .map(|s| s.trim())
+            .filter(|s| !s.is_empty())
+            .map(|s| s.to_string());
+
+        self.webdav_username = self
+            .webdav_username
+            .as_ref()
+            .map(|s| s.trim())
+            .filter(|s| !s.is_empty())
+            .map(|s| s.to_string());
+
+        self.webdav_password =
+            self.webdav_password
+                .take()
+                .and_then(|s| if s.trim().is_empty() { None } else { Some(s) });
+
+        self.webdav_remote_dir = self
+            .webdav_remote_dir
+            .as_ref()
+            .map(|s| s.trim())
+            .filter(|s| !s.is_empty())
+            .map(|s| s.to_string());
+
+        self.webdav_file_name = self
+            .webdav_file_name
+            .as_ref()
+            .map(|s| s.trim())
+            .filter(|s| !s.is_empty())
             .map(|s| s.to_string());
     }
 

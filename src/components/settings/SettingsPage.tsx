@@ -97,12 +97,58 @@ export function SettingsPage({
     errorMessage,
     backupId,
     isImporting,
+    isWebdavPending,
     selectImportFile,
     importConfig,
     exportConfig,
+    backupToWebdav,
+    restoreFromWebdav,
     clearSelection,
     resetStatus,
   } = useImportExport({ onImportSuccess });
+
+  const webdavConfig = useMemo(
+    () => ({
+      webdavUrl: settings?.webdavUrl,
+      webdavUsername: settings?.webdavUsername,
+      webdavPassword: settings?.webdavPassword,
+      webdavRemoteDir: settings?.webdavRemoteDir,
+      webdavFileName: settings?.webdavFileName,
+    }),
+    [
+      settings?.webdavFileName,
+      settings?.webdavPassword,
+      settings?.webdavRemoteDir,
+      settings?.webdavUrl,
+      settings?.webdavUsername,
+    ],
+  );
+
+  const handleWebdavConfigChange = useCallback(
+    (
+      updates: Partial<
+        Pick<
+          SettingsFormState,
+          | "webdavUrl"
+          | "webdavUsername"
+          | "webdavPassword"
+          | "webdavRemoteDir"
+          | "webdavFileName"
+        >
+      >,
+    ) => {
+      updateSettings(updates);
+    },
+    [updateSettings],
+  );
+
+  const handleBackupToWebdav = useCallback(async () => {
+    await backupToWebdav(webdavConfig);
+  }, [backupToWebdav, webdavConfig]);
+
+  const handleRestoreFromWebdav = useCallback(async () => {
+    await restoreFromWebdav(webdavConfig);
+  }, [restoreFromWebdav, webdavConfig]);
 
   const [activeTab, setActiveTab] = useState<string>("general");
   const [showRestartPrompt, setShowRestartPrompt] = useState(false);
@@ -590,9 +636,14 @@ export function SettingsPage({
                             errorMessage={errorMessage}
                             backupId={backupId}
                             isImporting={isImporting}
+                            isWebdavPending={isWebdavPending}
+                            webdavConfig={webdavConfig}
                             onSelectFile={selectImportFile}
                             onImport={importConfig}
                             onExport={exportConfig}
+                            onBackupToWebdav={handleBackupToWebdav}
+                            onRestoreFromWebdav={handleRestoreFromWebdav}
+                            onWebdavConfigChange={handleWebdavConfigChange}
                             onClear={clearSelection}
                           />
                         </AccordionContent>

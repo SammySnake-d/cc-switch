@@ -15,9 +15,14 @@ describe("ImportExportSection Component", () => {
     errorMessage: null,
     backupId: null,
     isImporting: false,
+    isWebdavPending: false,
+    webdavConfig: {},
     onSelectFile: vi.fn(),
     onImport: vi.fn(),
     onExport: vi.fn(),
+    onBackupToWebdav: vi.fn(),
+    onRestoreFromWebdav: vi.fn(),
+    onWebdavConfigChange: vi.fn(),
     onClear: vi.fn(),
   };
 
@@ -26,6 +31,9 @@ describe("ImportExportSection Component", () => {
     baseProps.onSelectFile.mockReset();
     baseProps.onImport.mockReset();
     baseProps.onExport.mockReset();
+    baseProps.onBackupToWebdav.mockReset();
+    baseProps.onRestoreFromWebdav.mockReset();
+    baseProps.onWebdavConfigChange.mockReset();
     baseProps.onClear.mockReset();
   });
 

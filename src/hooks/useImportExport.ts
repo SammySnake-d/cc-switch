@@ -15,16 +15,27 @@ export interface UseImportExportOptions {
   onImportSuccess?: () => void | Promise<void>;
 }
 
+export interface WebDavConfig {
+  webdavUrl?: string;
+  webdavUsername?: string;
+  webdavPassword?: string;
+  webdavRemoteDir?: string;
+  webdavFileName?: string;
+}
+
 export interface UseImportExportResult {
   selectedFile: string;
   status: ImportStatus;
   errorMessage: string | null;
   backupId: string | null;
   isImporting: boolean;
+  isWebdavPending: boolean;
   selectImportFile: () => Promise<void>;
   clearSelection: () => void;
   importConfig: () => Promise<void>;
   exportConfig: () => Promise<void>;
+  backupToWebdav: (config: WebDavConfig) => Promise<void>;
+  restoreFromWebdav: (config: WebDavConfig) => Promise<void>;
   resetStatus: () => void;
 }
 
@@ -39,6 +50,29 @@ export function useImportExport(
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [backupId, setBackupId] = useState<string | null>(null);
   const [isImporting, setIsImporting] = useState(false);
+  const [isWebdavPending, setIsWebdavPending] = useState(false);
+
+  const buildWebdavRequest = useCallback(
+    (config: WebDavConfig) => {
+      const url = config.webdavUrl?.trim() ?? "";
+      if (!url) {
+        throw new Error(
+          t("settings.webdavUrlRequired", {
+            defaultValue: "请先填写 WebDAV 地址",
+          }),
+        );
+      }
+
+      return {
+        url,
+        username: config.webdavUsername?.trim() || undefined,
+        password: config.webdavPassword || undefined,
+        remoteDir: config.webdavRemoteDir?.trim() || undefined,
+        fileName: config.webdavFileName?.trim() || undefined,
+      };
+    },
+    [t],
+  );
 
   const clearSelection = useCallback(() => {
     setSelectedFile("");
@@ -182,6 +216,113 @@ export function useImportExport(
     }
   }, [t]);
 
+  const backupToWebdav = useCallback(
+    async (config: WebDavConfig) => {
+      if (isWebdavPending) return;
+
+      setIsWebdavPending(true);
+      try {
+        const request = buildWebdavRequest(config);
+        const result = await settingsApi.uploadConfigBackupToWebdav(request);
+        if (!result.success) {
+          throw new Error(
+            result.message ||
+              t("settings.webdavBackupFailedError", {
+                defaultValue: "WebDAV 全量备份失败",
+              }),
+          );
+        }
+
+        toast.success(
+          t("settings.webdavBackupSuccess", {
+            defaultValue: "全量备份已上传到 WebDAV",
+          }) + (result.remoteUrl ? `\n${result.remoteUrl}` : ""),
+          { closeButton: true },
+        );
+      } catch (error) {
+        console.error("[useImportExport] Failed to backup to WebDAV", error);
+        toast.error(
+          t("settings.webdavBackupFailedError", {
+            defaultValue: "WebDAV 全量备份失败: {{message}}",
+            message:
+              error instanceof Error ? error.message : String(error ?? ""),
+          }),
+        );
+      } finally {
+        setIsWebdavPending(false);
+      }
+    },
+    [buildWebdavRequest, isWebdavPending, t],
+  );
+
+  const restoreFromWebdav = useCallback(
+    async (config: WebDavConfig) => {
+      if (isImporting || isWebdavPending) return;
+
+      setIsWebdavPending(true);
+      setStatus("importing");
+      setErrorMessage(null);
+
+      try {
+        const request = buildWebdavRequest(config);
+        const result =
+          await settingsApi.downloadConfigBackupFromWebdav(request);
+        if (!result.success) {
+          setStatus("error");
+          const message =
+            result.message ||
+            t("settings.webdavRestoreFailedError", {
+              defaultValue: "从 WebDAV 全量恢复失败",
+            });
+          setErrorMessage(message);
+          toast.error(message);
+          return;
+        }
+
+        setBackupId(result.backupId ?? null);
+        void onImportSuccess?.();
+
+        const syncResult = await syncCurrentProvidersLiveSafe();
+        if (syncResult.ok) {
+          setStatus("success");
+          toast.success(
+            t("settings.webdavRestoreSuccess", {
+              defaultValue: "已从 WebDAV 完成全量恢复",
+            }),
+            { closeButton: true },
+          );
+        } else {
+          console.error(
+            "[useImportExport] Failed to sync live config after WebDAV restore",
+            syncResult.error,
+          );
+          setStatus("partial-success");
+          toast.warning(
+            t("settings.importPartialSuccess", {
+              defaultValue:
+                "配置已导入，但同步到当前供应商失败。请手动重新选择一次供应商。",
+            }),
+          );
+        }
+      } catch (error) {
+        console.error("[useImportExport] Failed to restore from WebDAV", error);
+        setStatus("error");
+        const message =
+          error instanceof Error ? error.message : String(error ?? "");
+        setErrorMessage(message);
+        toast.error(
+          t("settings.webdavRestoreFailedError", {
+            defaultValue: "从 WebDAV 全量恢复失败: {{message}}",
+            message,
+          }),
+        );
+      } finally {
+        setIsWebdavPending(false);
+      }
+    },
+    [buildWebdavRequest, isImporting, isWebdavPending, onImportSuccess, t],
+  );
+
   const resetStatus = useCallback(() => {
     setStatus("idle");
     setErrorMessage(null);
@@ -194,10 +335,13 @@ export function useImportExport(
     errorMessage,
     backupId,
     isImporting,
+    isWebdavPending,
     selectImportFile,
     clearSelection,
     importConfig,
     exportConfig,
+    backupToWebdav,
+    restoreFromWebdav,
     resetStatus,
   };
 }

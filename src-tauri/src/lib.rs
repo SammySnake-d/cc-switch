@@ -1,6 +1,7 @@
 mod app_config;
 mod app_store;
 mod auto_launch;
+mod backup_bundle;
 mod claude_mcp;
 mod claude_plugin;
 mod codex_config;
@@ -851,6 +852,8 @@ pub fn run() {
             // theirs: config import/export and dialogs
             commands::export_config_to_file,
             commands::import_config_from_file,
+            commands::upload_config_backup_to_webdav,
+            commands::download_config_backup_from_webdav,
             commands::save_file_dialog,
             commands::open_file_dialog,
             commands::open_zip_file_dialog,

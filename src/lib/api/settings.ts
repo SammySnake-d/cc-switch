@@ -7,6 +7,17 @@ export interface ConfigTransferResult {
   message: string;
   filePath?: string;
   backupId?: string;
+  fullRestore?: boolean;
+  fileName?: string;
+  remoteUrl?: string;
+}
+
+export interface WebDavTransferRequest {
+  url: string;
+  username?: string;
+  password?: string;
+  remoteDir?: string;
+  fileName?: string;
 }
 
 export const settingsApi = {
@@ -91,6 +102,18 @@ export const settingsApi = {
 
   async importConfigFromFile(filePath: string): Promise<ConfigTransferResult> {
     return await invoke("import_config_from_file", { filePath });
+  },
+
+  async uploadConfigBackupToWebdav(
+    request: WebDavTransferRequest,
+  ): Promise<ConfigTransferResult> {
+    return await invoke("upload_config_backup_to_webdav", { request });
+  },
+
+  async downloadConfigBackupFromWebdav(
+    request: WebDavTransferRequest,
+  ): Promise<ConfigTransferResult> {
+    return await invoke("download_config_backup_from_webdav", { request });
   },
 
   async syncCurrentProvidersLive(): Promise<void> {

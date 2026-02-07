@@ -232,6 +232,18 @@ export interface Settings {
   // Windows: "cmd" | "powershell" | "wt"
   // Linux: "gnome-terminal" | "konsole" | "xfce4-terminal" | "alacritty" | "kitty" | "ghostty"
   preferredTerminal?: string;
+
+  // ===== WebDAV 备份设置 =====
+  // WebDAV 服务器地址（例如 https://dav.example.com/remote.php/dav/files/user）
+  webdavUrl?: string;
+  // WebDAV 用户名（可选）
+  webdavUsername?: string;
+  // WebDAV 密码或应用专用密码（可选）
+  webdavPassword?: string;
+  // 远端目录（可选，例如 cc-switch/backups）
+  webdavRemoteDir?: string;
+  // 远端文件名（可选，默认 cc-switch-backup.sql）
+  webdavFileName?: string;
 }
 
 export interface SessionMeta {

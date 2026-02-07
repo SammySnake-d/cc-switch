@@ -2,14 +2,17 @@ import { useMemo } from "react";
 import {
   AlertCircle,
   CheckCircle2,
+  CloudDownload,
+  CloudUpload,
   FolderOpen,
   Loader2,
   Save,
   XCircle,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import { useTranslation } from "react-i18next";
-import type { ImportStatus } from "@/hooks/useImportExport";
+import type { ImportStatus, WebDavConfig } from "@/hooks/useImportExport";
 
 interface ImportExportSectionProps {
   status: ImportStatus;
@@ -17,9 +20,14 @@ interface ImportExportSectionProps {
   errorMessage: string | null;
   backupId: string | null;
   isImporting: boolean;
+  isWebdavPending: boolean;
+  webdavConfig: WebDavConfig;
   onSelectFile: () => Promise<void>;
   onImport: () => Promise<void>;
   onExport: () => Promise<void>;
+  onBackupToWebdav: () => Promise<void>;
+  onRestoreFromWebdav: () => Promise<void>;
+  onWebdavConfigChange: (updates: Partial<WebDavConfig>) => void;
   onClear: () => void;
 }
 
@@ -29,12 +37,18 @@ export function ImportExportSection({
   errorMessage,
   backupId,
   isImporting,
+  isWebdavPending,
+  webdavConfig,
   onSelectFile,
   onImport,
   onExport,
+  onBackupToWebdav,
+  onRestoreFromWebdav,
+  onWebdavConfigChange,
   onClear,
 }: ImportExportSectionProps) {
   const { t } = useTranslation();
+  const isBusy = isImporting || isWebdavPending;
 
   const selectedFileName = useMemo(() => {
     if (!selectedFile) return "";
@@ -62,7 +76,7 @@ export function ImportExportSection({
               type="button"
               className={`w-full h-auto py-3 px-4 bg-blue-500 hover:bg-blue-600 dark:bg-blue-600 dark:hover:bg-blue-700 text-white ${selectedFile && !isImporting ? "flex-col items-start" : "items-center"}`}
               onClick={!selectedFile ? onSelectFile : onImport}
-              disabled={isImporting}
+              disabled={isBusy}
             >
               <div className="flex items-center gap-2 w-full justify-center">
                 {isImporting ? (
@@ -106,6 +120,7 @@ export function ImportExportSection({
               type="button"
               className="w-full h-full py-3 px-4 bg-blue-500 hover:bg-blue-600 dark:bg-blue-600 dark:hover:bg-blue-700 text-white items-center"
               onClick={onExport}
+              disabled={isBusy}
             >
               <Save className="mr-2 h-4 w-4" />
               {t("settings.exportConfig")}
@@ -118,6 +133,91 @@ export function ImportExportSection({
           errorMessage={errorMessage}
           backupId={backupId}
         />
+      </div>
+
+      <div className="space-y-4 rounded-xl glass-card p-6 border border-white/10">
+        <header className="space-y-1">
+          <h4 className="text-sm font-semibold text-foreground">
+            {t("settings.webdavTitle")}
+          </h4>
+          <p className="text-xs text-muted-foreground">
+            {t("settings.webdavHint")}
+          </p>
+        </header>
+
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+          <Input
+            value={webdavConfig.webdavUrl ?? ""}
+            onChange={(e) =>
+              onWebdavConfigChange({ webdavUrl: e.target.value })
+            }
+            placeholder={t("settings.webdavUrlPlaceholder")}
+            className="font-mono text-sm"
+          />
+          <Input
+            value={webdavConfig.webdavRemoteDir ?? ""}
+            onChange={(e) =>
+              onWebdavConfigChange({ webdavRemoteDir: e.target.value })
+            }
+            placeholder={t("settings.webdavRemoteDirPlaceholder")}
+            className="font-mono text-sm"
+          />
+          <Input
+            value={webdavConfig.webdavUsername ?? ""}
+            onChange={(e) =>
+              onWebdavConfigChange({ webdavUsername: e.target.value })
+            }
+            placeholder={t("settings.webdavUsernameLabel")}
+            className="font-mono text-sm"
+          />
+          <Input
+            type="password"
+            value={webdavConfig.webdavPassword ?? ""}
+            onChange={(e) =>
+              onWebdavConfigChange({ webdavPassword: e.target.value })
+            }
+            placeholder={t("settings.webdavPasswordLabel")}
+            className="font-mono text-sm"
+          />
+          <Input
+            value={webdavConfig.webdavFileName ?? ""}
+            onChange={(e) =>
+              onWebdavConfigChange({ webdavFileName: e.target.value })
+            }
+            placeholder={t("settings.webdavFileNamePlaceholder")}
+            className="font-mono text-sm md:col-span-2"
+          />
+        </div>
+
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+          <Button
+            type="button"
+            onClick={onBackupToWebdav}
+            disabled={isBusy}
+            className="w-full"
+          >
+            {isWebdavPending ? (
+              <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+            ) : (
+              <CloudUpload className="mr-2 h-4 w-4" />
+            )}
+            {t("settings.webdavBackup")}
+          </Button>
+          <Button
+            type="button"
+            variant="outline"
+            onClick={onRestoreFromWebdav}
+            disabled={isBusy}
+            className="w-full"
+          >
+            {isWebdavPending ? (
+              <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+            ) : (
+              <CloudDownload className="mr-2 h-4 w-4" />
+            )}
+            {t("settings.webdavRestore")}
+          </Button>
+        </div>
       </div>
     </section>
   );
