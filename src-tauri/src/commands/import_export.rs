@@ -12,8 +12,16 @@ use crate::error::AppError;
 use crate::services::provider::ProviderService;
 use crate::store::AppState;
 
+const DEFAULT_WEBDAV_BASE_URL: &str = "https://dav.jianguoyun.com/dav/";
+const DEFAULT_WEBDAV_BACKUP_DIR: &str = "cc-switch/backups";
 const DEFAULT_WEBDAV_FILE_NAME: &str = "cc-switch-backup.zip";
 const WEBDAV_TIMEOUT_SECS: u64 = 45;
+
+#[derive(Debug, Clone, Copy)]
+enum WebDavOperation {
+    Upload,
+    Download,
+}
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -44,6 +52,11 @@ fn normalize_optional(value: Option<String>) -> Option<String> {
         .map(str::trim)
         .filter(|s| !s.is_empty())
         .map(ToOwned::to_owned)
+}
+
+fn build_default_backup_file_name() -> String {
+    let now = chrono::Local::now();
+    format!("cc-switch-backup-{}.zip", now.format("%Y%m%d_%H%M%S"))
 }
 
 fn normalize_base_url(raw: &str) -> Result<Url, AppError> {
@@ -149,16 +162,27 @@ fn build_webdav_directory_urls(
 
 fn prepare_webdav_request(
     request: WebDavTransferRequest,
+    operation: WebDavOperation,
 ) -> Result<PreparedWebDavRequest, AppError> {
     let trimmed_url = request.url.trim();
-    if trimmed_url.is_empty() {
-        return Err(AppError::InvalidInput("WebDAV 地址不能为空".to_string()));
-    }
+    let effective_url = if trimmed_url.is_empty() {
+        DEFAULT_WEBDAV_BASE_URL
+    } else {
+        trimmed_url
+    };
 
-    let base_url = normalize_base_url(trimmed_url)?;
-    let remote_dir = normalize_optional(request.remote_dir);
+    let base_url = normalize_base_url(effective_url)?;
+    let remote_dir = normalize_optional(request.remote_dir)
+        .or_else(|| Some(DEFAULT_WEBDAV_BACKUP_DIR.to_string()));
     let directory_segments = parse_webdav_segments(remote_dir.as_deref())?;
-    let file_name = normalize_file_name(request.file_name)?;
+    let file_name = {
+        let normalized = normalize_optional(request.file_name);
+        let fallback = match operation {
+            WebDavOperation::Upload => build_default_backup_file_name(),
+            WebDavOperation::Download => DEFAULT_WEBDAV_FILE_NAME.to_string(),
+        };
+        normalize_file_name(normalized.or(Some(fallback)))?
+    };
     let target_url = build_webdav_target_url(&base_url, &directory_segments, &file_name)?;
     let directory_urls = build_webdav_directory_urls(&base_url, &directory_segments)?;
 
@@ -408,7 +432,8 @@ pub async fn upload_config_backup_to_webdav(
     request: WebDavTransferRequest,
     state: State<'_, AppState>,
 ) -> Result<Value, String> {
-    let prepared = prepare_webdav_request(request).map_err(|e| e.to_string())?;
+    let prepared =
+        prepare_webdav_request(request, WebDavOperation::Upload).map_err(|e| e.to_string())?;
     let db = state.db.clone();
 
     let backup_bytes = tauri::async_runtime::spawn_blocking(move || {
@@ -465,7 +490,8 @@ pub async fn download_config_backup_from_webdav(
     request: WebDavTransferRequest,
     state: State<'_, AppState>,
 ) -> Result<Value, String> {
-    let prepared = prepare_webdav_request(request).map_err(|e| e.to_string())?;
+    let prepared =
+        prepare_webdav_request(request, WebDavOperation::Download).map_err(|e| e.to_string())?;
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(WEBDAV_TIMEOUT_SECS))
         .build()
@@ -551,7 +577,8 @@ mod tests {
             file_name: Some("daily.zip".to_string()),
         };
 
-        let prepared = prepare_webdav_request(request).expect("prepare request");
+        let prepared =
+            prepare_webdav_request(request, WebDavOperation::Upload).expect("prepare request");
         assert_eq!(
             prepared.target_url.as_str(),
             "https://dav.example.com/remote.php/dav/files/user/cc-switch/backups/daily.zip"
@@ -568,7 +595,31 @@ mod tests {
             file_name: None,
         };
 
-        let prepared = prepare_webdav_request(request).expect("prepare request");
+        let prepared =
+            prepare_webdav_request(request, WebDavOperation::Download).expect("prepare request");
         assert_eq!(prepared.file_name, DEFAULT_WEBDAV_FILE_NAME);
+        assert_eq!(
+            prepared.target_url.as_str(),
+            "https://dav.example.com/webdav/cc-switch/backups/cc-switch-backup.zip"
+        );
+    }
+
+    #[test]
+    fn prepare_webdav_request_upload_uses_default_url_and_timestamp_name() {
+        let request = WebDavTransferRequest {
+            url: "".to_string(),
+            username: None,
+            password: None,
+            remote_dir: None,
+            file_name: None,
+        };
+
+        let prepared =
+            prepare_webdav_request(request, WebDavOperation::Upload).expect("prepare request");
+        assert!(prepared
+            .target_url
+            .as_str()
+            .starts_with("https://dav.jianguoyun.com/dav/cc-switch/backups/cc-switch-backup-"));
+        assert!(prepared.target_url.as_str().ends_with(".zip"));
     }
 }

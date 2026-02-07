@@ -50,7 +50,12 @@ import { UsageDashboard } from "@/components/usage/UsageDashboard";
 import { RectifierConfigPanel } from "@/components/settings/RectifierConfigPanel";
 import { LogConfigPanel } from "@/components/settings/LogConfigPanel";
 import { useSettings } from "@/hooks/useSettings";
-import { useImportExport } from "@/hooks/useImportExport";
+import {
+  buildDefaultWebdavBackupFileName,
+  DEFAULT_WEBDAV_REMOTE_DIR,
+  DEFAULT_WEBDAV_URL,
+  useImportExport,
+} from "@/hooks/useImportExport";
 import { useTranslation } from "react-i18next";
 import type { SettingsFormState } from "@/hooks/useSettings";
 import { Switch } from "@/components/ui/switch";
@@ -109,10 +114,16 @@ export function SettingsPage({
 
   const webdavConfig = useMemo(
     () => ({
-      webdavUrl: settings?.webdavUrl,
+      webdavUrl:
+        settings?.webdavUrl && settings.webdavUrl.trim().length > 0
+          ? settings.webdavUrl
+          : DEFAULT_WEBDAV_URL,
       webdavUsername: settings?.webdavUsername,
       webdavPassword: settings?.webdavPassword,
-      webdavRemoteDir: settings?.webdavRemoteDir,
+      webdavRemoteDir:
+        settings?.webdavRemoteDir && settings.webdavRemoteDir.trim().length > 0
+          ? settings.webdavRemoteDir
+          : DEFAULT_WEBDAV_REMOTE_DIR,
       webdavFileName: settings?.webdavFileName,
     }),
     [
@@ -143,8 +154,17 @@ export function SettingsPage({
   );
 
   const handleBackupToWebdav = useCallback(async () => {
-    await backupToWebdav(webdavConfig);
-  }, [backupToWebdav, webdavConfig]);
+    const fileName =
+      webdavConfig.webdavFileName?.trim() || buildDefaultWebdavBackupFileName();
+    if (!webdavConfig.webdavFileName?.trim()) {
+      updateSettings({ webdavFileName: fileName });
+    }
+
+    await backupToWebdav({
+      ...webdavConfig,
+      webdavFileName: fileName,
+    });
+  }, [backupToWebdav, updateSettings, webdavConfig]);
 
   const handleRestoreFromWebdav = useCallback(async () => {
     await restoreFromWebdav(webdavConfig);

@@ -23,6 +23,14 @@ export interface WebDavConfig {
   webdavFileName?: string;
 }
 
+export const DEFAULT_WEBDAV_URL = "https://dav.jianguoyun.com/dav/";
+export const DEFAULT_WEBDAV_REMOTE_DIR = "cc-switch/backups";
+
+export function buildDefaultWebdavBackupFileName(date = new Date()): string {
+  const stamp = `${date.getFullYear()}${String(date.getMonth() + 1).padStart(2, "0")}${String(date.getDate()).padStart(2, "0")}_${String(date.getHours()).padStart(2, "0")}${String(date.getMinutes()).padStart(2, "0")}${String(date.getSeconds()).padStart(2, "0")}`;
+  return `cc-switch-backup-${stamp}.zip`;
+}
+
 export interface UseImportExportResult {
   selectedFile: string;
   status: ImportStatus;
@@ -53,25 +61,23 @@ export function useImportExport(
   const [isWebdavPending, setIsWebdavPending] = useState(false);
 
   const buildWebdavRequest = useCallback(
-    (config: WebDavConfig) => {
-      const url = config.webdavUrl?.trim() ?? "";
-      if (!url) {
-        throw new Error(
-          t("settings.webdavUrlRequired", {
-            defaultValue: "请先填写 WebDAV 地址",
-          }),
-        );
-      }
+    (config: WebDavConfig, options?: { forBackup?: boolean }) => {
+      const url = config.webdavUrl?.trim() || DEFAULT_WEBDAV_URL;
+      const remoteDir =
+        config.webdavRemoteDir?.trim() || DEFAULT_WEBDAV_REMOTE_DIR;
+      const fileName =
+        config.webdavFileName?.trim() ||
+        (options?.forBackup ? buildDefaultWebdavBackupFileName() : undefined);
 
       return {
         url,
         username: config.webdavUsername?.trim() || undefined,
         password: config.webdavPassword || undefined,
-        remoteDir: config.webdavRemoteDir?.trim() || undefined,
-        fileName: config.webdavFileName?.trim() || undefined,
+        remoteDir,
+        fileName,
       };
     },
-    [t],
+    [],
   );
 
   const clearSelection = useCallback(() => {
@@ -222,7 +228,7 @@ export function useImportExport(
 
       setIsWebdavPending(true);
       try {
-        const request = buildWebdavRequest(config);
+        const request = buildWebdavRequest(config, { forBackup: true });
         const result = await settingsApi.uploadConfigBackupToWebdav(request);
         if (!result.success) {
           throw new Error(
