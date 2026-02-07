@@ -213,16 +213,16 @@ const JsonEditor: React.FC<JsonEditorProps> = ({
         color: "hsl(var(--muted-foreground))",
       },
       ".cm-selectionBackground, .cm-content ::selection": {
-        background: "hsl(var(--primary) / 0.18)",
-      },
-      ".cm-selectionMatch": {
         background: "hsl(var(--primary) / 0.12)",
       },
-      ".cm-activeLine": {
+      ".cm-selectionMatch": {
         background: "hsl(var(--primary) / 0.08)",
       },
+      ".cm-activeLine": {
+        background: "hsl(var(--primary) / 0.04)",
+      },
       ".cm-activeLineGutter": {
-        background: "hsl(var(--primary) / 0.08)",
+        background: "hsl(var(--primary) / 0.04)",
       },
     });
 
@@ -255,6 +255,11 @@ const JsonEditor: React.FC<JsonEditorProps> = ({
         ? [
             autocompletion({
               override: [requestHookScriptCompletionSource],
+            }),
+            EditorView.theme({
+              ".cm-content": {
+                filter: "saturate(62%) brightness(1.04)",
+              },
             }),
           ]
         : []),
@@ -290,16 +295,16 @@ const JsonEditor: React.FC<JsonEditorProps> = ({
             color: "hsl(var(--muted-foreground))",
           },
           ".cm-selectionBackground, .cm-content ::selection": {
-            background: "hsl(var(--primary) / 0.18)",
-          },
-          ".cm-selectionMatch": {
             background: "hsl(var(--primary) / 0.12)",
           },
-          ".cm-activeLine": {
+          ".cm-selectionMatch": {
             background: "hsl(var(--primary) / 0.08)",
           },
+          ".cm-activeLine": {
+            background: "hsl(var(--primary) / 0.04)",
+          },
           ".cm-activeLineGutter": {
-            background: "hsl(var(--primary) / 0.08)",
+            background: "hsl(var(--primary) / 0.04)",
           },
         }),
       );

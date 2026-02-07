@@ -171,6 +171,14 @@ export function RequestHookScriptConfig({
     }
   };
 
+  const handleTestScriptClick = async () => {
+    if (!canTest || testing) return;
+    if (!isTestingOpen) {
+      setIsTestingOpen(true);
+    }
+    await runTest();
+  };
+
   return (
     <div className="space-y-3">
       <div
@@ -218,7 +226,9 @@ export function RequestHookScriptConfig({
               size="sm"
               className="h-7 text-xs"
               disabled={!canTest || testing}
-              onClick={() => setIsTestingOpen((v) => !v)}
+              onClick={() => {
+                void handleTestScriptClick();
+              }}
               title={
                 canTest
                   ? undefined
