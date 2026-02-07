@@ -109,9 +109,17 @@ jobs:
         if: runner.os == 'Windows'
         run: pnpm tauri build
 
-      - name: Build Tauri App (Linux)
-        if: runner.os == 'Linux'
+      - name: Build Tauri App (Linux x86_64)
+        if: runner.os == 'Linux' && matrix.arch != 'arm64'
+        env:
+          APPIMAGE_EXTRACT_AND_RUN: '1'
         run: pnpm tauri build --bundles appimage,deb,rpm
+
+      - name: Build Tauri App (Linux ARM64)
+        if: runner.os == 'Linux' && matrix.arch == 'arm64'
+        env:
+          APPIMAGE_EXTRACT_AND_RUN: '1'
+        run: pnpm tauri build --bundles deb,rpm
 
       - name: Prepare macOS Assets
         if: runner.os == 'macOS'
@@ -267,7 +275,7 @@ jobs:
             - **macOS**: `CC-Switch-${{ github.ref_name }}-macOS.zip`（解压即用）或 `CC-Switch-${{ github.ref_name }}-macOS.tar.gz`（Homebrew）
             - **Windows**: `CC-Switch-${{ github.ref_name }}-Windows.msi`（安装版）或 `CC-Switch-${{ github.ref_name }}-Windows-Portable.zip`（绿色版）
             - **Linux (x86_64)**: `CC-Switch-${{ github.ref_name }}-Linux-x86_64.AppImage` / `.deb` / `.rpm`
-            - **Linux (ARM64)**: `CC-Switch-${{ github.ref_name }}-Linux-arm64.AppImage` / `.deb` / `.rpm`
+            - **Linux (ARM64)**: `CC-Switch-${{ github.ref_name }}-Linux-arm64.deb` / `.rpm`
 
             ---
             提示：macOS 如遇"已损坏"提示，可在终端执行：`xattr -cr "/Applications/CC Switch.app"`
