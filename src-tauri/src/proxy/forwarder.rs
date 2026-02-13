@@ -3,7 +3,6 @@
 //! 负责将请求转发到上游Provider，支持故障转移
 
 use super::{
-    body_filter::filter_private_params_with_whitelist,
     error::*,
     failover_switch::FailoverSwitchManager,
     provider_router::ProviderRouter,
@@ -582,9 +581,9 @@ impl RequestForwarder {
             mapped_body
         };
 
-        // 过滤私有参数（以 `_` 开头的字段），防止内部信息泄露到上游
-        // 默认使用空白名单，过滤所有 _ 前缀字段
-        let filtered_body = filter_private_params_with_whitelist(request_body, &[]);
+        // 暂时禁用私有参数过滤（以 `_` 开头的字段），因为部分客户端（如自定义 Agent）依赖这些参数
+        // 启用过滤会导致这些客户端无法正常工作
+        let filtered_body = request_body;
 
         // 获取 HTTP 客户端：优先使用供应商单独代理配置，否则使用全局客户端
         let proxy_config = provider.meta.as_ref().and_then(|m| m.proxy_config.as_ref());
