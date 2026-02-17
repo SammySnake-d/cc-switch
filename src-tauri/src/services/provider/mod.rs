@@ -178,6 +178,7 @@ impl ProviderService {
             write_live_snapshot(&app_type, &provider)?;
         }
 
+        Self::invalidate_cache(state, &app_type);
         Ok(true)
     }
 
@@ -232,6 +233,7 @@ impl ProviderService {
             }
         }
 
+        Self::invalidate_cache(state, &app_type);
         Ok(true)
     }
 
@@ -259,7 +261,9 @@ impl ProviderService {
             ));
         }
 
-        state.db.delete_provider(app_type.as_str(), id)
+        state.db.delete_provider(app_type.as_str(), id)?;
+        Self::invalidate_cache(state, &app_type);
+        Ok(())
     }
 
     /// Remove provider from live config only (for additive mode apps like OpenCode)
@@ -355,6 +359,7 @@ impl ProviderService {
 
             // Note: No Live config write, no MCP sync
             // The proxy server will route requests to the new provider via is_current
+            Self::invalidate_cache(state, &app_type);
             return Ok(());
         }
 
@@ -409,6 +414,7 @@ impl ProviderService {
         // Sync MCP
         McpService::sync_all_enabled(state)?;
 
+        Self::invalidate_cache(state, &app_type);
         Ok(())
     }
 
@@ -676,6 +682,7 @@ impl ProviderService {
             }
         }
 
+        Self::invalidate_cache(state, &app_type);
         Ok(true)
     }
 
@@ -719,6 +726,14 @@ impl ProviderService {
 
     pub(crate) fn write_gemini_live(provider: &Provider) -> Result<(), AppError> {
         write_gemini_live(provider)
+    }
+
+    fn invalidate_cache(state: &AppState, app_type: &AppType) {
+        futures::executor::block_on(
+            state
+                .proxy_service
+                .invalidate_provider_cache(app_type.as_str()),
+        );
     }
 
     fn validate_provider_settings(app_type: &AppType, provider: &Provider) -> Result<(), AppError> {

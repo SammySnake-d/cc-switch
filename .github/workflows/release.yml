@@ -94,12 +94,61 @@ jobs:
       - name: Install frontend deps
         run: pnpm install --frozen-lockfile
 
-      # ========== 跳过签名（个人构建版本）==========
-      - name: Skip signing (personal build)
+      - name: Prepare Tauri signing key
         shell: bash
         run: |
-          echo "⚠️ Building without signing - this is a personal build"
-          echo "TAURI_SIGNING_PRIVATE_KEY=" >> "$GITHUB_ENV"
+          # 调试：检查 Secret 是否存在
+          if [ -z "${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}" ]; then
+            echo "❌ TAURI_SIGNING_PRIVATE_KEY Secret 为空或不存在" >&2
+            echo "请检查 GitHub 仓库 Settings > Secrets and variables > Actions" >&2
+            exit 1
+          fi
+          
+          RAW="${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}"
+          # 目标：提供正确的私钥“文件路径”给 Tauri CLI，避免内容解码歧义
+          KEY_PATH="$RUNNER_TEMP/tauri_signing.key"
+          # 情况 1：原始两行文本（第一行以 "untrusted comment:" 开头）
+          if echo "$RAW" | head -n1 | grep -q '^untrusted comment:'; then
+            printf '%s\n' "$RAW" > "$KEY_PATH"
+            echo "✅ 使用原始两行密钥文件格式"
+          else
+            # 情况 2：整体被 base64 包裹（解包后应当是两行）
+            if DECODED=$(printf '%s' "$RAW" | (base64 --decode 2>/dev/null || base64 -D 2>/dev/null)) \
+               && echo "$DECODED" | head -n1 | grep -q '^untrusted comment:'; then
+              printf '%s\n' "$DECODED" > "$KEY_PATH"
+              echo "✅ 成功解码 base64 包裹密钥，已还原为两行文件"
+            else
+              # 情况 3：已是第二行（纯 Base64 一行）→ 构造两行文件
+              if echo "$RAW" | grep -Eq '^[A-Za-z0-9+/=]+$'; then
+                ONE=$(printf '%s' "$RAW" | tr -d '\r\n')
+                printf '%s\n%s\n' "untrusted comment: tauri signing key" "$ONE" > "$KEY_PATH"
+                echo "✅ 使用一行 Base64 私钥，已构造两行文件"
+              else
+                echo "❌ TAURI_SIGNING_PRIVATE_KEY 格式无法识别：既不是两行原文，也不是其 base64，亦非一行 base64" >&2
+                echo "密钥前10个字符: $(echo "$RAW" | head -c 10)..." >&2
+                exit 1
+              fi
+            fi
+          fi
+          # 将“完整两行内容”作为环境变量注入（Tauri 支持传入完整私钥文本或文件路径）
+          # 使用多行写入语法，保持换行以便解析
+          # 将完整两行私钥内容进行 base64 编码，作为单行内容注入环境变量
+          if command -v base64 >/dev/null 2>&1; then
+            KEY_B64=$(base64 < "$KEY_PATH" | tr -d '\r\n')
+          elif command -v openssl >/dev/null 2>&1; then
+            KEY_B64=$(openssl base64 -A -in "$KEY_PATH")
+          else
+            KEY_B64=$(KEY_PATH="$KEY_PATH" node -e "process.stdout.write(require('fs').readFileSync(process.env.KEY_PATH).toString('base64'))")
+          fi
+          if [ -z "$KEY_B64" ]; then
+            echo "❌ 无法生成私钥 base64 内容" >&2
+            exit 1
+          fi
+          echo "TAURI_SIGNING_PRIVATE_KEY=$KEY_B64" >> "$GITHUB_ENV"
+          if [ -n "${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}" ]; then
+            echo "TAURI_SIGNING_PRIVATE_KEY_PASSWORD=${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}" >> $GITHUB_ENV
+          fi
+          echo "✅ Tauri signing key prepared"
 
       - name: Build Tauri App (macOS)
         if: runner.os == 'macOS'
@@ -109,17 +158,9 @@ jobs:
         if: runner.os == 'Windows'
         run: pnpm tauri build
 
-      - name: Build Tauri App (Linux x86_64)
-        if: runner.os == 'Linux' && matrix.arch != 'arm64'
-        env:
-          APPIMAGE_EXTRACT_AND_RUN: '1'
+      - name: Build Tauri App (Linux)
+        if: runner.os == 'Linux'
         run: pnpm tauri build --bundles appimage,deb,rpm
-
-      - name: Build Tauri App (Linux ARM64)
-        if: runner.os == 'Linux' && matrix.arch == 'arm64'
-        env:
-          APPIMAGE_EXTRACT_AND_RUN: '1'
-        run: pnpm tauri build --bundles deb,rpm
 
       - name: Prepare macOS Assets
         if: runner.os == 'macOS'
@@ -141,14 +182,14 @@ jobs:
             fi
           done
           if [ -z "$TAR_GZ" ]; then
-            echo "⚠️ No macOS .tar.gz found (expected when signing is disabled)" >&2
-          else
-            # 重命名 tar.gz 为统一格式
-            NEW_TAR_GZ="CC-Switch-${VERSION}-macOS.tar.gz"
-            cp "$TAR_GZ" "release-assets/$NEW_TAR_GZ"
-            [ -f "$TAR_GZ.sig" ] && cp "$TAR_GZ.sig" "release-assets/$NEW_TAR_GZ.sig" || echo ".sig for macOS not found"
-            echo "macOS updater artifact copied: $NEW_TAR_GZ"
+            echo "No macOS .tar.gz updater artifact found" >&2
+            exit 1
           fi
+          # 重命名 tar.gz 为统一格式
+          NEW_TAR_GZ="CC-Switch-${VERSION}-macOS.tar.gz"
+          cp "$TAR_GZ" "release-assets/$NEW_TAR_GZ"
+          [ -f "$TAR_GZ.sig" ] && cp "$TAR_GZ.sig" "release-assets/$NEW_TAR_GZ.sig" || echo ".sig for macOS not found yet"
+          echo "macOS updater artifact copied: $NEW_TAR_GZ"
           if [ -n "$APP_PATH" ]; then
             APP_DIR=$(dirname "$APP_PATH"); APP_NAME=$(basename "$APP_PATH")
             NEW_ZIP="CC-Switch-${VERSION}-macOS.zip"
@@ -157,8 +198,7 @@ jobs:
             mv "$NEW_ZIP" "$GITHUB_WORKSPACE/release-assets/"
             echo "macOS zip ready: $NEW_ZIP"
           else
-            echo "❌ No .app found - cannot create release asset" >&2
-            exit 1
+            echo "No .app found to zip (optional)" >&2
           fi
 
       - name: Prepare Windows Assets
@@ -275,7 +315,7 @@ jobs:
             - **macOS**: `CC-Switch-${{ github.ref_name }}-macOS.zip`（解压即用）或 `CC-Switch-${{ github.ref_name }}-macOS.tar.gz`（Homebrew）
             - **Windows**: `CC-Switch-${{ github.ref_name }}-Windows.msi`（安装版）或 `CC-Switch-${{ github.ref_name }}-Windows-Portable.zip`（绿色版）
             - **Linux (x86_64)**: `CC-Switch-${{ github.ref_name }}-Linux-x86_64.AppImage` / `.deb` / `.rpm`
-            - **Linux (ARM64)**: `CC-Switch-${{ github.ref_name }}-Linux-arm64.deb` / `.rpm`
+            - **Linux (ARM64)**: `CC-Switch-${{ github.ref_name }}-Linux-arm64.AppImage` / `.deb` / `.rpm`
 
             ---
             提示：macOS 如遇"已损坏"提示，可在终端执行：`xattr -cr "/Applications/CC Switch.app"`

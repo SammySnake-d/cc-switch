@@ -7,6 +7,7 @@ use crate::database::Database;
 use crate::error::AppError;
 use crate::provider::Provider;
 use crate::proxy::circuit_breaker::{AllowResult, CircuitBreaker, CircuitBreakerConfig};
+use crate::proxy::types::AppProxyConfig;
 use std::collections::HashMap;
 use std::str::FromStr;
 use std::sync::Arc;
@@ -18,6 +19,13 @@ pub struct ProviderRouter {
     db: Arc<Database>,
     /// 熔断器管理器 - key 格式: "app_type:provider_id"
     circuit_breakers: Arc<RwLock<HashMap<String, Arc<CircuitBreaker>>>>,
+    /// 配置缓存 - key: app_type
+    config_cache: Arc<RwLock<HashMap<String, AppProxyConfig>>>,
+    /// 候选供应商列表缓存 - key: app_type
+    ///
+    /// 存储 select_providers() 的结果（不包含熔断器状态过滤），
+    /// 即：若故障转移开启则为队列，若关闭则为当前供应商。
+    candidate_cache: Arc<RwLock<HashMap<String, Vec<Provider>>>>,
 }
 
 impl ProviderRouter {
@@ -26,58 +34,86 @@ impl ProviderRouter {
         Self {
             db,
             circuit_breakers: Arc::new(RwLock::new(HashMap::new())),
+            config_cache: Arc::new(RwLock::new(HashMap::new())),
+            candidate_cache: Arc::new(RwLock::new(HashMap::new())),
         }
     }
 
-    /// 选择可用的供应商（支持故障转移）
-    ///
-    /// 返回按优先级排序的可用供应商列表：
-    /// - 故障转移关闭时：仅返回当前供应商
-    /// - 故障转移开启时：仅使用故障转移队列，按队列顺序依次尝试（P1 → P2 → ...）
-    pub async fn select_providers(&self, app_type: &str) -> Result<Vec<Provider>, AppError> {
-        let mut result = Vec::new();
-        let mut total_providers = 0usize;
-        let mut circuit_open_count = 0usize;
+    /// 获取应用代理配置（带缓存）
+    pub async fn get_config(&self, app_type: &str) -> AppProxyConfig {
+        // Check cache first
+        {
+            let cache = self.config_cache.read().await;
+            if let Some(config) = cache.get(app_type) {
+                return config.clone();
+            }
+        }
 
-        // 检查该应用的自动故障转移开关是否开启（从 proxy_config 表读取）
-        let auto_failover_enabled = match self.db.get_proxy_config_for_app(app_type).await {
-            Ok(config) => config.auto_failover_enabled,
+        // Fetch from DB
+        let config = match self.db.get_proxy_config_for_app(app_type).await {
+            Ok(config) => config,
             Err(e) => {
                 log::error!("[{app_type}] 读取 proxy_config 失败: {e}，默认禁用故障转移");
-                false
+                // Construct a default config with failure-safe defaults
+                AppProxyConfig {
+                    app_type: app_type.to_string(),
+                    enabled: false,
+                    auto_failover_enabled: false,
+                    max_retries: 3,
+                    streaming_first_byte_timeout: 60,
+                    streaming_idle_timeout: 120,
+                    non_streaming_timeout: 600,
+                    circuit_failure_threshold: 5,
+                    circuit_success_threshold: 2,
+                    circuit_timeout_seconds: 60,
+                    circuit_error_rate_threshold: 0.5,
+                    circuit_min_requests: 10,
+                }
             }
         };
 
-        if auto_failover_enabled {
+        // Update cache
+        {
+            let mut cache = self.config_cache.write().await;
+            cache.insert(app_type.to_string(), config.clone());
+        }
+
+        config
+    }
+
+    /// 获取候选供应商列表（带缓存）
+    ///
+    /// 根据自动故障转移开关状态，返回待尝试的供应商列表。
+    /// 此列表不包含动态熔断器状态过滤。
+    async fn get_candidate_providers(
+        &self,
+        app_type: &str,
+        auto_failover_enabled: bool,
+    ) -> Result<Vec<Provider>, AppError> {
+        // Check cache first
+        {
+            let cache = self.candidate_cache.read().await;
+            if let Some(providers) = cache.get(app_type) {
+                return Ok(providers.clone());
+            }
+        }
+
+        let providers = if auto_failover_enabled {
             // 故障转移开启：仅按队列顺序依次尝试（P1 → P2 → ...）
             let all_providers = self.db.get_all_providers(app_type)?;
+            let queue = self.db.get_failover_queue(app_type)?;
+            let ordered_ids: Vec<String> = queue.into_iter().map(|item| item.provider_id).collect();
 
-            // 使用 DAO 返回的排序结果，确保和前端展示一致
-            let ordered_ids: Vec<String> = self
-                .db
-                .get_failover_queue(app_type)?
-                .into_iter()
-                .map(|item| item.provider_id)
-                .collect();
-
-            total_providers = ordered_ids.len();
-
+            let mut result = Vec::new();
             for provider_id in ordered_ids {
-                let Some(provider) = all_providers.get(&provider_id).cloned() else {
-                    continue;
-                };
-
-                let circuit_key = format!("{app_type}:{}", provider.id);
-                let breaker = self.get_or_create_circuit_breaker(&circuit_key).await;
-
-                if breaker.is_available().await {
+                if let Some(provider) = all_providers.get(&provider_id).cloned() {
                     result.push(provider);
-                } else {
-                    circuit_open_count += 1;
                 }
             }
+            result
         } else {
-            // 故障转移关闭：仅使用当前供应商，跳过熔断器检查
+            // 故障转移关闭：仅使用当前供应商
+            let mut result = Vec::new();
             let current_id = AppType::from_str(app_type)
                 .ok()
                 .and_then(|app_enum| {
@@ -89,9 +125,68 @@ impl ProviderRouter {
 
             if let Some(current_id) = current_id {
                 if let Some(current) = self.db.get_provider_by_id(&current_id, app_type)? {
-                    total_providers = 1;
                     result.push(current);
                 }
+            }
+            result
+        };
+
+        // Update cache
+        {
+            let mut cache = self.candidate_cache.write().await;
+            cache.insert(app_type.to_string(), providers.clone());
+        }
+
+        Ok(providers)
+    }
+
+    /// 使缓存失效（当配置或供应商变更时调用）
+    pub async fn invalidate_cache(&self, app_type: &str) {
+        {
+            let mut config_cache = self.config_cache.write().await;
+            config_cache.remove(app_type);
+        }
+        {
+            let mut candidate_cache = self.candidate_cache.write().await;
+            candidate_cache.remove(app_type);
+        }
+        log::debug!("[{app_type}] ProviderRouter 缓存已失效");
+    }
+
+    /// 选择可用的供应商（支持故障转移）
+    ///
+    /// 返回按优先级排序的可用供应商列表：
+    /// - 故障转移关闭时：仅返回当前供应商
+    /// - 故障转移开启时：仅使用故障转移队列，按队列顺序依次尝试（P1 → P2 → ...）
+    pub async fn select_providers(&self, app_type: &str) -> Result<Vec<Provider>, AppError> {
+        let mut result = Vec::new();
+        let mut circuit_open_count = 0usize;
+
+        // 1. 获取应用配置（带缓存）
+        let config = self.get_config(app_type).await;
+        let auto_failover_enabled = config.auto_failover_enabled;
+
+        // 2. 获取候选供应商列表（带缓存）
+        let candidate_providers = self
+            .get_candidate_providers(app_type, auto_failover_enabled)
+            .await?;
+        let total_providers = candidate_providers.len();
+
+        // 3. 动态检查熔断器状态（不缓存，需实时检查）
+        for provider in candidate_providers {
+            // 故障转移关闭时，跳过熔断器检查，强制返回当前供应商
+            if !auto_failover_enabled {
+                result.push(provider);
+                continue;
+            }
+
+            let circuit_key = format!("{app_type}:{}", provider.id);
+            let breaker = self.get_or_create_circuit_breaker(&circuit_key).await;
+
+            if breaker.is_available().await {
+                result.push(provider);
+            } else {
+                circuit_open_count += 1;
             }
         }
 

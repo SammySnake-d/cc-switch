@@ -6,7 +6,7 @@ use crate::database::Database;
 use crate::error::AppError;
 use crate::services::usage_stats::find_model_pricing_row;
 use rust_decimal::Decimal;
-use std::{str::FromStr, time::SystemTime};
+use std::{str::FromStr, sync::Arc, time::SystemTime};
 
 /// 请求日志
 #[derive(Debug, Clone)]
@@ -32,90 +32,96 @@ pub struct RequestLog {
 }
 
 /// 使用量记录器
-pub struct UsageLogger<'a> {
-    db: &'a Database,
+pub struct UsageLogger {
+    db: Arc<Database>,
 }
 
-impl<'a> UsageLogger<'a> {
-    pub fn new(db: &'a Database) -> Self {
+impl UsageLogger {
+    pub fn new(db: Arc<Database>) -> Self {
         Self { db }
     }
 
     /// 记录成功的请求
-    pub fn log_request(&self, log: &RequestLog) -> Result<(), AppError> {
-        let conn = crate::database::lock_conn!(self.db.conn);
+    pub async fn log_request(&self, log: RequestLog) -> Result<(), AppError> {
+        let db = self.db.clone();
 
-        let (input_cost, output_cost, cache_read_cost, cache_creation_cost, total_cost) =
-            if let Some(cost) = &log.cost {
-                (
-                    cost.input_cost.to_string(),
-                    cost.output_cost.to_string(),
-                    cost.cache_read_cost.to_string(),
-                    cost.cache_creation_cost.to_string(),
-                    cost.total_cost.to_string(),
-                )
-            } else {
-                (
-                    "0".to_string(),
-                    "0".to_string(),
-                    "0".to_string(),
-                    "0".to_string(),
-                    "0".to_string(),
-                )
-            };
+        // Use spawn_blocking to move blocking database I/O off the async runtime
+        tokio::task::spawn_blocking(move || {
+            let conn = crate::database::lock_conn!(db.conn);
 
-        let created_at = SystemTime::now()
-            .duration_since(SystemTime::UNIX_EPOCH)
-            .map(|d| d.as_secs() as i64)
-            .unwrap_or_else(|e| {
-                log::warn!("SystemTime is before UNIX_EPOCH, falling back to 0: {e}");
-                0
-            });
+            let (input_cost, output_cost, cache_read_cost, cache_creation_cost, total_cost) =
+                if let Some(cost) = &log.cost {
+                    (
+                        cost.input_cost.to_string(),
+                        cost.output_cost.to_string(),
+                        cost.cache_read_cost.to_string(),
+                        cost.cache_creation_cost.to_string(),
+                        cost.total_cost.to_string(),
+                    )
+                } else {
+                    (
+                        "0".to_string(),
+                        "0".to_string(),
+                        "0".to_string(),
+                        "0".to_string(),
+                        "0".to_string(),
+                    )
+                };
 
-        conn.execute(
-            "INSERT INTO proxy_request_logs (
-                request_id, provider_id, app_type, model, request_model,
-                input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens,
-                input_cost_usd, output_cost_usd, cache_read_cost_usd, cache_creation_cost_usd, total_cost_usd,
-                latency_ms, first_token_ms, status_code, error_message, session_id,
-                provider_type, is_streaming, cost_multiplier, created_at
-            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23)",
-            rusqlite::params![
-                log.request_id,
-                log.provider_id,
-                log.app_type,
-                log.model,
-                log.request_model,
-                log.usage.input_tokens,
-                log.usage.output_tokens,
-                log.usage.cache_read_tokens,
-                log.usage.cache_creation_tokens,
-                input_cost,
-                output_cost,
-                cache_read_cost,
-                cache_creation_cost,
-                total_cost,
-                log.latency_ms as i64,
-                log.first_token_ms.map(|v| v as i64),
-                log.status_code as i64,
-                log.error_message,
-                log.session_id,
-                log.provider_type,
-                log.is_streaming as i64,
-                log.cost_multiplier,
-                created_at,
-            ],
-        )
-        .map_err(|e| AppError::Database(format!("记录请求日志失败: {e}")))?;
+            let created_at = SystemTime::now()
+                .duration_since(SystemTime::UNIX_EPOCH)
+                .map(|d| d.as_secs() as i64)
+                .unwrap_or_else(|e| {
+                    log::warn!("SystemTime is before UNIX_EPOCH, falling back to 0: {e}");
+                    0
+                });
 
-        Ok(())
+            conn.execute(
+                "INSERT INTO proxy_request_logs (
+                    request_id, provider_id, app_type, model, request_model,
+                    input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens,
+                    input_cost_usd, output_cost_usd, cache_read_cost_usd, cache_creation_cost_usd, total_cost_usd,
+                    latency_ms, first_token_ms, status_code, error_message, session_id,
+                    provider_type, is_streaming, cost_multiplier, created_at
+                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23)",
+                rusqlite::params![
+                    log.request_id,
+                    log.provider_id,
+                    log.app_type,
+                    log.model,
+                    log.request_model,
+                    log.usage.input_tokens,
+                    log.usage.output_tokens,
+                    log.usage.cache_read_tokens,
+                    log.usage.cache_creation_tokens,
+                    input_cost,
+                    output_cost,
+                    cache_read_cost,
+                    cache_creation_cost,
+                    total_cost,
+                    log.latency_ms as i64,
+                    log.first_token_ms.map(|v| v as i64),
+                    log.status_code as i64,
+                    log.error_message,
+                    log.session_id,
+                    log.provider_type,
+                    log.is_streaming as i64,
+                    log.cost_multiplier,
+                    created_at,
+                ],
+            )
+            .map(|_| ())
+            .map_err(|e| AppError::Database(format!("记录请求日志失败: {e}")))
+        })
+        .await
+        .map_err(|e| AppError::Database(format!("Logging task failed: {e}")))?
     }
 
     /// 记录失败的请求
     ///
     /// 用于记录无法从上游获取 usage 信息的失败请求
     #[allow(dead_code, clippy::too_many_arguments)]
-    pub fn log_error(
+    pub async fn log_error(
         &self,
         request_id: String,
         provider_id: String,
@@ -144,14 +150,14 @@ impl<'a> UsageLogger<'a> {
             cost_multiplier: "1.0".to_string(),
         };
 
-        self.log_request(&log)
+        self.log_request(log).await
     }
 
     /// 记录失败的请求（带更多上下文信息）
     ///
     /// 相比 log_error，这个方法接受更多参数以提供完整的请求上下文
     #[allow(clippy::too_many_arguments)]
-    pub fn log_error_with_context(
+    pub async fn log_error_with_context(
         &self,
         request_id: String,
         provider_id: String,
@@ -183,21 +189,28 @@ impl<'a> UsageLogger<'a> {
             cost_multiplier: "1.0".to_string(),
         };
 
-        self.log_request(&log)
+        self.log_request(log).await
     }
 
     /// 获取模型定价
-    pub fn get_model_pricing(&self, model_id: &str) -> Result<Option<ModelPricing>, AppError> {
-        let conn = crate::database::lock_conn!(self.db.conn);
-        let row = find_model_pricing_row(&conn, model_id)?;
-        match row {
-            Some((input, output, cache_read, cache_creation)) => {
-                ModelPricing::from_strings(&input, &output, &cache_read, &cache_creation)
-                    .map(Some)
-                    .map_err(|e| AppError::Database(format!("解析定价数据失败: {e}")))
+    pub async fn get_model_pricing(&self, model_id: &str) -> Result<Option<ModelPricing>, AppError> {
+        let db = self.db.clone();
+        let model_id = model_id.to_string();
+
+        tokio::task::spawn_blocking(move || {
+            let conn = crate::database::lock_conn!(db.conn);
+            let row = find_model_pricing_row(&conn, &model_id)?;
+            match row {
+                Some((input, output, cache_read, cache_creation)) => {
+                    ModelPricing::from_strings(&input, &output, &cache_read, &cache_creation)
+                        .map(Some)
+                        .map_err(|e| AppError::Database(format!("解析定价数据失败: {e}")))
+                }
+                None => Ok(None),
             }
-            None => Ok(None),
-        }
+        })
+        .await
+        .map_err(|e| AppError::Database(format!("Pricing lookup task failed: {e}")))?
     }
 
     /// 获取有效的倍率与计费模式来源（供应商优先，未配置则回退全局默认）
@@ -284,7 +297,7 @@ impl<'a> UsageLogger<'a> {
 
     /// 计算并记录请求
     #[allow(clippy::too_many_arguments)]
-    pub fn log_with_calculation(
+    pub async fn log_with_calculation(
         &self,
         request_id: String,
         provider_id: String,
@@ -301,7 +314,7 @@ impl<'a> UsageLogger<'a> {
         provider_type: Option<String>,
         is_streaming: bool,
     ) -> Result<(), AppError> {
-        let pricing = self.get_model_pricing(&pricing_model)?;
+        let pricing = self.get_model_pricing(&pricing_model).await?;
 
         if pricing.is_none() {
             log::warn!("[USG-002] 模型定价未找到，成本将记录为 0: {pricing_model}");
@@ -327,7 +340,7 @@ impl<'a> UsageLogger<'a> {
             cost_multiplier: cost_multiplier.to_string(),
         };
 
-        self.log_request(&log)
+        self.log_request(log).await
     }
 }
 
@@ -335,9 +348,9 @@ impl<'a> UsageLogger<'a> {
 mod tests {
     use super::*;
 
-    #[test]
-    fn test_log_request() -> Result<(), AppError> {
-        let db = Database::memory()?;
+    #[tokio::test]
+    async fn test_log_request() -> Result<(), AppError> {
+        let db = Arc::new(Database::memory()?);
 
         // 插入测试定价
         {
@@ -350,7 +363,7 @@ mod tests {
             .unwrap();
         }
 
-        let logger = UsageLogger::new(&db);
+        let logger = UsageLogger::new(db.clone());
 
         let usage = TokenUsage {
             input_tokens: 1000,
@@ -375,7 +388,7 @@ mod tests {
             None,
             Some("claude".to_string()),
             false,
-        )?;
+        ).await?;
 
         // 验证记录已插入
         let conn = crate::database::lock_conn!(db.conn);
@@ -391,10 +404,10 @@ mod tests {
         Ok(())
     }
 
-    #[test]
-    fn test_log_error() -> Result<(), AppError> {
-        let db = Database::memory()?;
-        let logger = UsageLogger::new(&db);
+    #[tokio::test]
+    async fn test_log_error() -> Result<(), AppError> {
+        let db = Arc::new(Database::memory()?);
+        let logger = UsageLogger::new(db.clone());
 
         logger.log_error(
             "req-error".to_string(),
@@ -404,7 +417,7 @@ mod tests {
             500,
             "Internal Server Error".to_string(),
             50,
-        )?;
+        ).await?;
 
         // 验证错误记录已插入
         let conn = crate::database::lock_conn!(db.conn);
@@ -417,6 +430,69 @@ mod tests {
             .unwrap();
         assert_eq!(status, 500);
         assert_eq!(error, Some("Internal Server Error".to_string()));
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod perf_tests {
+    use super::*;
+    use std::sync::Arc;
+
+    #[tokio::test]
+    async fn test_concurrent_logging_performance() -> Result<(), AppError> {
+        let db = Database::memory().unwrap();
+
+        // Seed pricing data
+        {
+            let conn = crate::database::lock_conn!(db.conn);
+            conn.execute(
+                "INSERT INTO model_pricing (model_id, display_name, input_cost_per_million, output_cost_per_million)
+                 VALUES ('perf-model', 'Perf Model', '1.0', '1.0')",
+                [],
+            ).unwrap();
+        }
+
+        let db = Arc::new(db);
+        let start = std::time::Instant::now();
+        let mut handles = vec![];
+
+        for i in 0..100 {
+            let db = db.clone();
+            handles.push(tokio::spawn(async move {
+                let logger = UsageLogger::new(db);
+                let usage = TokenUsage {
+                    input_tokens: 10,
+                    output_tokens: 10,
+                    cache_read_tokens: 0,
+                    cache_creation_tokens: 0,
+                    model: None,
+                };
+
+                logger.log_with_calculation(
+                    format!("req-{}", i),
+                    "provider-perf".to_string(),
+                    "claude".to_string(),
+                    "perf-model".to_string(),
+                    "req-model".to_string(),
+                    "perf-model".to_string(),
+                    usage,
+                    Decimal::from(1),
+                    100,
+                    None,
+                    200,
+                    None,
+                    Some("claude".to_string()),
+                    false,
+                ).await.unwrap();
+            }));
+        }
+
+        for handle in handles {
+            handle.await.unwrap();
+        }
+
+        println!("PERF_RESULT: Total time for 100 log requests: {:?}", start.elapsed());
         Ok(())
     }
 }
