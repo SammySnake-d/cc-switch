@@ -442,7 +442,7 @@ fn create_usage_collector(
     let state = state.clone();
     let provider_id = ctx.provider.id.clone();
     let request_model = ctx.request_model.clone();
-    let actual_model = ctx.get_actual_model().to_string();
+    let effective_model = ctx.get_actual_model().to_string();
     let app_type_str = parser_config.app_type_str;
     let tag = ctx.tag;
     let start_time = ctx.start_time;
@@ -452,7 +452,7 @@ fn create_usage_collector(
 
     SseUsageCollector::new(start_time, move |events, first_token_ms| {
         if let Some(usage) = stream_parser(&events) {
-            let model = model_extractor(&events, &actual_model);
+            let model = model_extractor(&events, &effective_model);
             let latency_ms = start_time.elapsed().as_millis() as u64;
 
             let state = state.clone();
@@ -477,7 +477,7 @@ fn create_usage_collector(
                 .await;
             });
         } else {
-            let model = model_extractor(&events, &actual_model);
+            let model = model_extractor(&events, &effective_model);
             let latency_ms = start_time.elapsed().as_millis() as u64;
             let state = state.clone();
             let provider_id = provider_id.clone();

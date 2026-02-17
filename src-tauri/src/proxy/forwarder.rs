@@ -181,7 +181,7 @@ impl RequestForwarder {
                 .forward(provider, endpoint, &body, &headers, adapter.as_ref())
                 .await
             {
-                Ok((response, original_model, mapped_model)) => {
+                Ok((response, orig_model, final_model)) => {
                     // 成功：记录成功并更新熔断器
                     let _ = self
                         .router
@@ -235,8 +235,8 @@ impl RequestForwarder {
                     return Ok(ForwardResult {
                         response,
                         provider: provider.clone(),
-                        original_model,
-                        mapped_model,
+                        original_model: orig_model,
+                        mapped_model: final_model,
                     });
                 }
                 Err(e) => {
@@ -324,7 +324,7 @@ impl RequestForwarder {
                                 .forward(provider, endpoint, &body, &headers, adapter.as_ref())
                                 .await
                             {
-                                Ok((response, original_model, mapped_model)) => {
+                                Ok((response, orig_model, final_model)) => {
                                     log::info!("[{app_type_str}] [RECT-002] 整流重试成功");
                                     // 记录成功
                                     let _ = self
@@ -382,8 +382,8 @@ impl RequestForwarder {
                                     return Ok(ForwardResult {
                                         response,
                                         provider: provider.clone(),
-                                        original_model,
-                                        mapped_model,
+                                        original_model: orig_model,
+                                        mapped_model: final_model,
                                     });
                                 }
                                 Err(retry_err) => {
@@ -564,7 +564,7 @@ impl RequestForwarder {
         let mut url = adapter.build_url(&base_url, effective_endpoint);
 
         // 应用模型映射（根据适配器类型选择不同的映射器）
-        let (mapped_body, original_model, mapped_model) = if adapter.name() == "Codex" {
+        let (mapped_body, orig_model, final_model) = if adapter.name() == "Codex" {
             // Codex 使用专用映射器，支持 effort 组合映射
             super::codex_model_mapper::apply_codex_model_mapping(body.clone(), provider)
         } else {
@@ -814,11 +814,12 @@ impl RequestForwarder {
             .unwrap_or("<none>");
         
         // 如果发生了模型映射，在日志中显示映射关系
-        if let (Some(orig), Some(mapped)) = (&original_model, &mapped_model) {
+        // 只有当模型确实发生改变时才显示映射关系
+        if let (Some(ref orig), Some(ref mapped)) = (&orig_model, &final_model) {
             if orig != mapped {
                 log::info!("[{tag}] >>> 请求 URL: {url} (原始模型={orig} → 实际模型={mapped})");
             } else {
-                log::info!("[{tag}] >>> 请求 URL: {url} (model={mapped})");
+                log::info!("[{tag}] >>> 请求 URL: {url} (model={body_model})");
             }
         } else {
             log::info!("[{tag}] >>> 请求 URL: {url} (model={body_model})");
@@ -846,7 +847,7 @@ impl RequestForwarder {
         let status = response.status();
 
         if status.is_success() {
-            Ok((response, original_model, mapped_model))
+            Ok((response, orig_model, final_model))
         } else {
             let status_code = status.as_u16();
             let body_text = response.text().await.ok();
