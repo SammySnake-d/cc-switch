@@ -15,10 +15,11 @@ impl Database {
     ///
     /// 从 claude 行读取（三行镜像一致）
     pub async fn get_global_proxy_config(&self) -> Result<GlobalProxyConfig, AppError> {
-        // 使用 block 限制 conn 的作用域，避免跨 await 持有锁
-        let result = {
-            let conn = lock_conn!(self.conn);
-            conn.query_row(
+        let conn = self.conn.clone();
+        // 使用 spawn_blocking 避免阻塞 async 运行时
+        let result = tokio::task::spawn_blocking(move || {
+            let conn = lock_conn!(conn);
+            match conn.query_row(
                 "SELECT proxy_enabled, listen_address, listen_port, enable_logging
                  FROM proxy_config WHERE app_type = 'claude'",
                 [],
@@ -30,13 +31,18 @@ impl Database {
                         enable_logging: row.get::<_, i32>(3)? != 0,
                     })
                 },
-            )
-        };
-        // conn 已在 block 结束时释放
+            ) {
+                Ok(config) => Ok(Some(config)),
+                Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+                Err(e) => Err(AppError::Database(e.to_string())),
+            }
+        })
+        .await
+        .map_err(|e| AppError::Database(format!("JoinError: {e}")))?;
 
-        match result {
-            Ok(config) => Ok(config),
-            Err(rusqlite::Error::QueryReturnedNoRows) => {
+        match result? {
+            Some(config) => Ok(config),
+            None => {
                 // 如果不存在，创建默认配置
                 self.init_proxy_config_rows().await?;
                 Ok(GlobalProxyConfig {
@@ -46,7 +52,6 @@ impl Database {
                     enable_logging: true,
                 })
             }
-            Err(e) => Err(AppError::Database(e.to_string())),
         }
     }
 
@@ -192,34 +197,46 @@ impl Database {
         &self,
         app_type: &str,
     ) -> Result<AppProxyConfig, AppError> {
+        // 1. 检查缓存
+        if let Ok(cache) = self.app_config_cache.read() {
+            if let Some(config) = cache.get(app_type) {
+                return Ok(config.clone());
+            }
+        }
+
         // 使用 block 限制 conn 的作用域，避免跨 await 持有锁
-        let app_type_owned = app_type.to_string();
-        let result = {
-            let conn = lock_conn!(self.conn);
-            conn.query_row(
-                "SELECT app_type, enabled, auto_failover_enabled,
+        let query = "SELECT app_type, enabled, auto_failover_enabled,
                         max_retries, streaming_first_byte_timeout, streaming_idle_timeout, non_streaming_timeout,
                         circuit_failure_threshold, circuit_success_threshold, circuit_timeout_seconds,
                         circuit_error_rate_threshold, circuit_min_requests
-                 FROM proxy_config WHERE app_type = ?1",
-                [app_type],
-                |row| {
-                    Ok(AppProxyConfig {
-                        app_type: row.get(0)?,
-                        enabled: row.get::<_, i32>(1)? != 0,
-                        auto_failover_enabled: row.get::<_, i32>(2)? != 0,
-                        max_retries: row.get::<_, i32>(3)? as u32,
-                        streaming_first_byte_timeout: row.get::<_, i32>(4)? as u32,
-                        streaming_idle_timeout: row.get::<_, i32>(5)? as u32,
-                        non_streaming_timeout: row.get::<_, i32>(6)? as u32,
-                        circuit_failure_threshold: row.get::<_, i32>(7)? as u32,
-                        circuit_success_threshold: row.get::<_, i32>(8)? as u32,
-                        circuit_timeout_seconds: row.get::<_, i32>(9)? as u32,
-                        circuit_error_rate_threshold: row.get(10)?,
-                        circuit_min_requests: row.get::<_, i32>(11)? as u32,
-                    })
-                },
-            )
+                 FROM proxy_config WHERE app_type = ?1";
+
+        let result = {
+            let conn = lock_conn!(self.conn);
+            let res = conn.query_row(query, [app_type], |row| {
+                Ok(AppProxyConfig {
+                    app_type: row.get(0)?,
+                    enabled: row.get::<_, i32>(1)? != 0,
+                    auto_failover_enabled: row.get::<_, i32>(2)? != 0,
+                    max_retries: row.get::<_, i32>(3)? as u32,
+                    streaming_first_byte_timeout: row.get::<_, i32>(4)? as u32,
+                    streaming_idle_timeout: row.get::<_, i32>(5)? as u32,
+                    non_streaming_timeout: row.get::<_, i32>(6)? as u32,
+                    circuit_failure_threshold: row.get::<_, i32>(7)? as u32,
+                    circuit_success_threshold: row.get::<_, i32>(8)? as u32,
+                    circuit_timeout_seconds: row.get::<_, i32>(9)? as u32,
+                    circuit_error_rate_threshold: row.get(10)?,
+                    circuit_min_requests: row.get::<_, i32>(11)? as u32,
+                })
+            });
+
+            // Update cache inside lock to prevent race condition
+            if let Ok(ref config) = res {
+                if let Ok(mut cache) = self.app_config_cache.write() {
+                    cache.insert(app_type.to_string(), config.clone());
+                }
+            }
+            res
         };
         // conn 已在 block 结束时释放
 
@@ -228,20 +245,37 @@ impl Database {
             Err(rusqlite::Error::QueryReturnedNoRows) => {
                 // 如果不存在，创建默认配置
                 self.init_proxy_config_rows().await?;
-                Ok(AppProxyConfig {
-                    app_type: app_type_owned,
-                    enabled: false,
-                    auto_failover_enabled: false,
-                    max_retries: 3,
-                    streaming_first_byte_timeout: 60,
-                    streaming_idle_timeout: 120,
-                    non_streaming_timeout: 600,
-                    circuit_failure_threshold: 4,
-                    circuit_success_threshold: 2,
-                    circuit_timeout_seconds: 60,
-                    circuit_error_rate_threshold: 0.6,
-                    circuit_min_requests: 10,
-                })
+
+                // 再次查询
+                let config_res = {
+                    let conn = lock_conn!(self.conn);
+                    let res = conn.query_row(query, [app_type], |row| {
+                        Ok(AppProxyConfig {
+                            app_type: row.get(0)?,
+                            enabled: row.get::<_, i32>(1)? != 0,
+                            auto_failover_enabled: row.get::<_, i32>(2)? != 0,
+                            max_retries: row.get::<_, i32>(3)? as u32,
+                            streaming_first_byte_timeout: row.get::<_, i32>(4)? as u32,
+                            streaming_idle_timeout: row.get::<_, i32>(5)? as u32,
+                            non_streaming_timeout: row.get::<_, i32>(6)? as u32,
+                            circuit_failure_threshold: row.get::<_, i32>(7)? as u32,
+                            circuit_success_threshold: row.get::<_, i32>(8)? as u32,
+                            circuit_timeout_seconds: row.get::<_, i32>(9)? as u32,
+                            circuit_error_rate_threshold: row.get(10)?,
+                            circuit_min_requests: row.get::<_, i32>(11)? as u32,
+                        })
+                    });
+
+                    // Update cache inside lock
+                    if let Ok(ref config) = res {
+                        if let Ok(mut cache) = self.app_config_cache.write() {
+                            cache.insert(app_type.to_string(), config.clone());
+                        }
+                    }
+                    res
+                };
+
+                config_res.map_err(|e| AppError::Database(e.to_string()))
             }
             Err(e) => Err(AppError::Database(e.to_string())),
         }
@@ -286,6 +320,11 @@ impl Database {
         )
         .map_err(|e| AppError::Database(e.to_string()))?;
 
+        // Update cache
+        if let Ok(mut cache) = self.app_config_cache.write() {
+            cache.insert(config.app_type.clone(), config);
+        }
+
         Ok(())
     }
 
@@ -327,6 +366,11 @@ impl Database {
             ],
         )
         .map_err(|e| AppError::Database(e.to_string()))?;
+
+        // Invalidate all cache
+        if let Ok(mut cache) = self.app_config_cache.write() {
+            cache.clear();
+        }
 
         Ok(())
     }
@@ -445,6 +489,11 @@ impl Database {
         )
         .map_err(|e| AppError::Database(e.to_string()))?;
 
+        // Invalidate all cache (legacy config updates all rows)
+        if let Ok(mut cache) = self.app_config_cache.write() {
+            cache.clear();
+        }
+
         Ok(())
     }
 
@@ -478,8 +527,12 @@ impl Database {
         provider_id: &str,
         app_type: &str,
     ) -> Result<ProviderHealth, AppError> {
-        let result = {
-            let conn = lock_conn!(self.conn);
+        let provider_id = provider_id.to_string();
+        let app_type = app_type.to_string();
+        let conn_arc = self.conn.clone();
+
+        let result = tokio::task::spawn_blocking(move || {
+            let conn = lock_conn!(conn_arc);
 
             conn.query_row(
                 "SELECT provider_id, app_type, is_healthy, consecutive_failures,
@@ -500,7 +553,9 @@ impl Database {
                     })
                 },
             )
-        };
+        })
+        .await
+        .map_err(|e| AppError::Database(format!("Spawn blocking failed: {e}")))?;
 
         match result {
             Ok(health) => Ok(health),
@@ -546,60 +601,67 @@ impl Database {
         error_msg: Option<String>,
         failure_threshold: u32,
     ) -> Result<(), AppError> {
-        let conn = lock_conn!(self.conn);
+        let provider_id = provider_id.to_string();
+        let app_type = app_type.to_string();
+        let conn_arc = self.conn.clone();
 
-        let now = chrono::Utc::now().to_rfc3339();
+        tokio::task::spawn_blocking(move || {
+            let conn = lock_conn!(conn_arc);
+            let now = chrono::Utc::now().to_rfc3339();
 
-        // 先查询当前状态
-        let current = conn.query_row(
-            "SELECT consecutive_failures FROM provider_health
-             WHERE provider_id = ?1 AND app_type = ?2",
-            rusqlite::params![provider_id, app_type],
-            |row| Ok(row.get::<_, i64>(0)? as u32),
-        );
+            // 先查询当前状态
+            let current = conn.query_row(
+                "SELECT consecutive_failures FROM provider_health
+                 WHERE provider_id = ?1 AND app_type = ?2",
+                rusqlite::params![provider_id, app_type],
+                |row| Ok(row.get::<_, i64>(0)? as u32),
+            );
 
-        let (is_healthy, consecutive_failures) = if success {
-            // 成功：重置失败计数
-            (1, 0)
-        } else {
-            // 失败：增加失败计数
-            let failures = current.unwrap_or(0) + 1;
-            // 使用传入的阈值而非硬编码
-            let healthy = if failures >= failure_threshold { 0 } else { 1 };
-            (healthy, failures)
-        };
+            let (is_healthy, consecutive_failures) = if success {
+                // 成功：重置失败计数
+                (1, 0)
+            } else {
+                // 失败：增加失败计数
+                let failures = current.unwrap_or(0) + 1;
+                // 使用传入的阈值而非硬编码
+                let healthy = if failures >= failure_threshold { 0 } else { 1 };
+                (healthy, failures)
+            };
 
-        let (last_success_at, last_failure_at) = if success {
-            (Some(now.clone()), None)
-        } else {
-            (None, Some(now.clone()))
-        };
+            let (last_success_at, last_failure_at) = if success {
+                (Some(now.clone()), None)
+            } else {
+                (None, Some(now.clone()))
+            };
 
-        // UPSERT
-        conn.execute(
-            "INSERT OR REPLACE INTO provider_health
-             (provider_id, app_type, is_healthy, consecutive_failures,
-              last_success_at, last_failure_at, last_error, updated_at)
-             VALUES (?1, ?2, ?3, ?4,
-                     COALESCE(?5, (SELECT last_success_at FROM provider_health
-                                   WHERE provider_id = ?1 AND app_type = ?2)),
-                     COALESCE(?6, (SELECT last_failure_at FROM provider_health
-                                   WHERE provider_id = ?1 AND app_type = ?2)),
-                     ?7, ?8)",
-            rusqlite::params![
-                provider_id,
-                app_type,
-                is_healthy,
-                consecutive_failures as i64,
-                last_success_at,
-                last_failure_at,
-                error_msg,
-                &now,
-            ],
-        )
-        .map_err(|e| AppError::Database(e.to_string()))?;
+            // UPSERT
+            conn.execute(
+                "INSERT OR REPLACE INTO provider_health
+                 (provider_id, app_type, is_healthy, consecutive_failures,
+                  last_success_at, last_failure_at, last_error, updated_at)
+                 VALUES (?1, ?2, ?3, ?4,
+                         COALESCE(?5, (SELECT last_success_at FROM provider_health
+                                       WHERE provider_id = ?1 AND app_type = ?2)),
+                         COALESCE(?6, (SELECT last_failure_at FROM provider_health
+                                       WHERE provider_id = ?1 AND app_type = ?2)),
+                         ?7, ?8)",
+                rusqlite::params![
+                    provider_id,
+                    app_type,
+                    is_healthy,
+                    consecutive_failures as i64,
+                    last_success_at,
+                    last_failure_at,
+                    error_msg,
+                    &now,
+                ],
+            )
+            .map_err(|e| AppError::Database(e.to_string()))?;
 
-        Ok(())
+            Ok(())
+        })
+        .await
+        .map_err(|e| AppError::Database(format!("Spawn blocking failed: {e}")))?
     }
 
     /// 重置Provider健康状态
@@ -715,6 +777,11 @@ impl Database {
             ],
         )
         .map_err(|e| AppError::Database(e.to_string()))?;
+
+        // Invalidate all cache
+        if let Ok(mut cache) = self.app_config_cache.write() {
+            cache.clear();
+        }
 
         Ok(())
     }
@@ -844,6 +911,11 @@ impl Database {
         )
         .map_err(|e| AppError::Database(e.to_string()))?;
 
+        // Invalidate cache
+        if let Ok(mut cache) = self.app_config_cache.write() {
+            cache.remove(app_type);
+        }
+
         Ok(())
     }
 }
@@ -910,6 +982,36 @@ mod tests {
                 ..
             }
         ));
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_get_global_proxy_config() -> Result<(), AppError> {
+        let db = Database::memory()?;
+
+        // Should return default config
+        let config = db.get_global_proxy_config().await?;
+        assert_eq!(config.listen_address, "127.0.0.1");
+        assert_eq!(config.listen_port, 15721);
+        assert!(!config.proxy_enabled);
+        assert!(config.enable_logging);
+
+        // Update config
+        let new_config = crate::proxy::types::GlobalProxyConfig {
+            proxy_enabled: true,
+            listen_address: "0.0.0.0".to_string(),
+            listen_port: 8080,
+            enable_logging: false,
+        };
+        db.update_global_proxy_config(new_config).await?;
+
+        // Should return updated config
+        let updated = db.get_global_proxy_config().await?;
+        assert_eq!(updated.listen_address, "0.0.0.0");
+        assert_eq!(updated.listen_port, 8080);
+        assert!(updated.proxy_enabled);
+        assert!(!updated.enable_logging);
 
         Ok(())
     }
