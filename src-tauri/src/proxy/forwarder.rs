@@ -811,8 +811,9 @@ impl RequestForwarder {
         // 如果发生了模型映射且模型确实改变，在日志中显示映射关系
         if let (Some(ref orig), Some(ref mapped)) = (&orig_model, &final_model) if orig != mapped {
             log::info!("[{tag}] >>> 请求 URL: {url} (原始模型={orig} → 实际模型={mapped})");
-        } else if let (Some(ref mapped), _) | (_, Some(ref mapped)) = (&orig_model, &final_model) {
+        } else if final_model.is_some() || orig_model.is_some() {
             // 有映射信息但模型相同，或只有部分信息，显示标准格式
+            let mapped = final_model.as_ref().or(orig_model.as_ref()).unwrap();
             log::info!("[{tag}] >>> 请求 URL: {url} (model={mapped})");
         } else {
             // 无映射信息，从请求体读取模型
