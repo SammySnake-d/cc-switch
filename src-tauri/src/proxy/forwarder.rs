@@ -807,21 +807,21 @@ impl RequestForwarder {
 
         // 输出请求信息日志
         let tag = adapter.name();
-        // 从请求体中读取实际的模型字段（已经是映射后的）
-        let body_model = filtered_body
-            .get("model")
-            .and_then(|v| v.as_str())
-            .unwrap_or("<none>");
         
-        // 如果发生了模型映射，在日志中显示映射关系
-        // 只有当模型确实发生改变时才显示映射关系
+        // 如果发生了模型映射且模型确实改变，在日志中显示映射关系
         if let (Some(ref orig), Some(ref mapped)) = (&orig_model, &final_model) {
             if orig != mapped {
                 log::info!("[{tag}] >>> 请求 URL: {url} (原始模型={orig} → 实际模型={mapped})");
             } else {
-                log::info!("[{tag}] >>> 请求 URL: {url} (model={body_model})");
+                // 模型相同，显示标准格式
+                log::info!("[{tag}] >>> 请求 URL: {url} (model={mapped})");
             }
         } else {
+            // 无映射信息，从请求体读取模型
+            let body_model = filtered_body
+                .get("model")
+                .and_then(|v| v.as_str())
+                .unwrap_or("<none>");
             log::info!("[{tag}] >>> 请求 URL: {url} (model={body_model})");
         }
         if let Ok(body_str) = serde_json::to_string(&filtered_body) {
