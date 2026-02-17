@@ -272,10 +272,7 @@ pub struct ProviderMeta {
     #[serde(rename = "codexModelMapping", skip_serializing_if = "Option::is_none")]
     pub codex_model_mapping: Option<crate::proxy::codex_model_mapper::CodexModelMappingConfig>,
     /// 请求体重写器配置（用于过滤或覆盖 JSON 字段）
-    #[serde(
-        rename = "requestBodyRewriter",
-        skip_serializing_if = "Option::is_none"
-    )]
+    #[serde(rename = "requestBodyRewriter", skip_serializing_if = "Option::is_none")]
     pub request_body_rewriter: Option<RequestBodyRewriter>,
     /// 请求重写脚本（onRequest，脚本式修改 headers/body）
     #[serde(rename = "requestHookScript", skip_serializing_if = "Option::is_none")]
