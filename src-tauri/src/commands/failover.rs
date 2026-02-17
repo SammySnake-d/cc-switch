@@ -42,7 +42,14 @@ pub async fn add_to_failover_queue(
     state
         .db
         .add_to_failover_queue(&app_type, &provider_id)
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string())?;
+
+    state
+        .proxy_service
+        .invalidate_provider_cache(&app_type)
+        .await;
+
+    Ok(())
 }
 
 /// 从故障转移队列移除供应商
@@ -55,7 +62,14 @@ pub async fn remove_from_failover_queue(
     state
         .db
         .remove_from_failover_queue(&app_type, &provider_id)
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string())?;
+
+    state
+        .proxy_service
+        .invalidate_provider_cache(&app_type)
+        .await;
+
+    Ok(())
 }
 
 /// 获取指定应用的自动故障转移开关状态（从 proxy_config 表读取）
@@ -143,6 +157,12 @@ pub async fn set_auto_failover_enabled(
         .update_proxy_config_for_app(config)
         .await
         .map_err(|e| e.to_string())?;
+
+    // 使缓存失效（配置已变更）
+    state
+        .proxy_service
+        .invalidate_provider_cache(&app_type)
+        .await;
 
     // 开启后立即切到 P1：更新 is_current + 本地 settings + Live 备份（接管模式下）
     if enabled {

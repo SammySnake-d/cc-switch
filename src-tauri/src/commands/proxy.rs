@@ -114,10 +114,19 @@ pub async fn update_proxy_config_for_app(
     state: tauri::State<'_, AppState>,
     config: AppProxyConfig,
 ) -> Result<(), String> {
+    let app_type = config.app_type.clone();
     let db = &state.db;
     db.update_proxy_config_for_app(config)
         .await
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string())?;
+
+    // Invalidate cache
+    state
+        .proxy_service
+        .invalidate_provider_cache(&app_type)
+        .await;
+
+    Ok(())
 }
 
 async fn get_default_cost_multiplier_internal(
