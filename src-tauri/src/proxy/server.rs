@@ -268,4 +268,9 @@ impl ProxyServer {
             .reset_provider_breaker(provider_id, app_type)
             .await;
     }
+
+    /// 使 ProviderRouter 缓存失效
+    pub async fn invalidate_provider_cache(&self, app_type: &str) {
+        self.state.provider_router.invalidate_cache(app_type).await;
+    }
 }
