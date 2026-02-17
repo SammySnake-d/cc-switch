@@ -530,11 +530,13 @@ impl Database {
         let provider_id = provider_id.to_string();
         let app_type = app_type.to_string();
         let conn_arc = self.conn.clone();
+        let provider_id_for_default = provider_id.clone();
+        let app_type_for_default = app_type.clone();
 
         let result = tokio::task::spawn_blocking(move || {
             let conn = lock_conn!(conn_arc);
 
-            conn.query_row(
+            match conn.query_row(
                 "SELECT provider_id, app_type, is_healthy, consecutive_failures,
                         last_success_at, last_failure_at, last_error, updated_at
                  FROM provider_health
@@ -552,7 +554,11 @@ impl Database {
                         updated_at: row.get(7)?,
                     })
                 },
-            )
+            ) {
+                Ok(health) => Ok(health),
+                Err(rusqlite::Error::QueryReturnedNoRows) => Err(AppError::Database("no_rows".to_string())),
+                Err(e) => Err(AppError::Database(e.to_string())),
+            }
         })
         .await
         .map_err(|e| AppError::Database(format!("Spawn blocking failed: {e}")))?;
@@ -560,9 +566,9 @@ impl Database {
         match result {
             Ok(health) => Ok(health),
             // 缺少记录时视为健康（关闭后清空状态，再次打开时默认正常）
-            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(ProviderHealth {
-                provider_id: provider_id.to_string(),
-                app_type: app_type.to_string(),
+            Err(AppError::Database(ref msg)) if msg == "no_rows" => Ok(ProviderHealth {
+                provider_id: provider_id_for_default,
+                app_type: app_type_for_default,
                 is_healthy: true,
                 consecutive_failures: 0,
                 last_success_at: None,
@@ -570,7 +576,7 @@ impl Database {
                 last_error: None,
                 updated_at: chrono::Utc::now().to_rfc3339(),
             }),
-            Err(e) => Err(AppError::Database(e.to_string())),
+            other => other,
         }
     }
 
