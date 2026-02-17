@@ -75,7 +75,6 @@ export interface RequestHookScript {
   code: string;
   timeoutMs?: number;
 }
-
 // 单个套餐用量数据
 export interface UsageData {
   planName?: string; // 套餐名称（可选）
