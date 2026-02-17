@@ -92,6 +92,8 @@ pub async fn handle_messages(
 
     ctx.provider = result.provider;
     let response = result.response;
+    // 设置映射后的模型（如果有映射）
+    ctx.set_mapped_model(result.mapped_model);
 
     // 检查是否需要格式转换（OpenRouter 等中转服务）
     let adapter = get_adapter(&AppType::Claude);
@@ -305,6 +307,8 @@ pub async fn handle_chat_completions(
 
     ctx.provider = result.provider;
     let response = result.response;
+    // 设置映射后的模型（如果有映射）
+    ctx.set_mapped_model(result.mapped_model);
 
     process_response(response, &ctx, &state, &OPENAI_PARSER_CONFIG).await
 }
@@ -347,6 +351,8 @@ pub async fn handle_responses(
 
     ctx.provider = result.provider;
     let response = result.response;
+    // 设置映射后的模型（如果有映射）
+    ctx.set_mapped_model(result.mapped_model);
 
     process_response(response, &ctx, &state, &CODEX_PARSER_CONFIG).await
 }
@@ -402,6 +408,8 @@ pub async fn handle_gemini(
 
     ctx.provider = result.provider;
     let response = result.response;
+    // 设置映射后的模型（如果有映射）
+    ctx.set_mapped_model(result.mapped_model);
 
     process_response(response, &ctx, &state, &GEMINI_PARSER_CONFIG).await
 }
