@@ -57,7 +57,7 @@ pub struct ForwardResult {
     pub response: Response,
     pub provider: Provider,
     /// 客户端请求的原始模型名（映射前）
-    pub original_model: Option<String>,
+    pub _original_model: Option<String>,
     /// 实际发送到上游的模型名（映射后）
     pub mapped_model: Option<String>,
 }
@@ -235,7 +235,7 @@ impl RequestForwarder {
                     return Ok(ForwardResult {
                         response,
                         provider: provider.clone(),
-                        original_model: orig_model,
+                        _original_model: orig_model,
                         mapped_model: final_model,
                     });
                 }
@@ -382,7 +382,7 @@ impl RequestForwarder {
                                     return Ok(ForwardResult {
                                         response,
                                         provider: provider.clone(),
-                                        original_model: orig_model,
+                                        _original_model: orig_model,
                                         mapped_model: final_model,
                                     });
                                 }
