@@ -1871,6 +1871,15 @@ impl ProxyService {
         }
         Ok(())
     }
+
+    /// 使 ProviderRouter 缓存失效
+    ///
+    /// 如果代理服务器正在运行，通知 ProviderRouter 清除指定应用的缓存
+    pub async fn invalidate_provider_cache(&self, app_type: &str) {
+        if let Some(server) = self.server.read().await.as_ref() {
+            server.invalidate_provider_cache(app_type).await;
+        }
+    }
 }
 
 #[cfg(test)]
