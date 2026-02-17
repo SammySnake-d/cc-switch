@@ -36,9 +36,11 @@ pub use dao::FailoverQueueItem;
 
 use crate::config::get_app_config_dir;
 use crate::error::AppError;
+use crate::proxy::types::AppProxyConfig;
 use rusqlite::Connection;
 use serde::Serialize;
-use std::sync::Mutex;
+use std::collections::HashMap;
+use std::sync::{Mutex, RwLock};
 
 // DAO 方法通过 impl Database 提供，无需额外导出
 
@@ -73,6 +75,7 @@ pub(crate) use lock_conn;
 /// rusqlite::Connection 本身不是 Sync 的，因此需要这层包装。
 pub struct Database {
     pub(crate) conn: Mutex<Connection>,
+    pub(crate) app_config_cache: RwLock<HashMap<String, AppProxyConfig>>,
 }
 
 impl Database {
@@ -95,6 +98,7 @@ impl Database {
 
         let db = Self {
             conn: Mutex::new(conn),
+            app_config_cache: RwLock::new(HashMap::new()),
         };
         db.create_tables()?;
         db.apply_schema_migrations()?;
@@ -113,6 +117,7 @@ impl Database {
 
         let db = Self {
             conn: Mutex::new(conn),
+            app_config_cache: RwLock::new(HashMap::new()),
         };
         db.create_tables()?;
         db.ensure_model_pricing_seeded()?;
