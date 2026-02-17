@@ -98,16 +98,16 @@ pub async fn get_tool_versions() -> Result<Vec<ToolVersion>, String> {
     for tool in tools {
         // 1. 获取本地版本 - 先尝试直接执行，失败则扫描常见路径
         let (local_version, local_error) = if let Some(distro) = wsl_distro_for_tool(tool) {
-            try_get_version_wsl(tool, &distro)
+            try_get_version_wsl(tool, &distro).await
         } else {
             // 先尝试直接执行
-            let direct_result = try_get_version(tool);
+            let direct_result = try_get_version(tool).await;
 
             if direct_result.0.is_some() {
                 direct_result
             } else {
                 // 扫描常见的 npm 全局安装路径
-                scan_cli_version(tool)
+                scan_cli_version(tool).await
             }
         };
 
@@ -185,8 +185,8 @@ fn extract_version(raw: &str) -> String {
 }
 
 /// 尝试直接执行命令获取版本
-fn try_get_version(tool: &str) -> (Option<String>, Option<String>) {
-    use std::process::Command;
+async fn try_get_version(tool: &str) -> (Option<String>, Option<String>) {
+    use tokio::process::Command;
 
     #[cfg(target_os = "windows")]
     let output = {
@@ -194,6 +194,7 @@ fn try_get_version(tool: &str) -> (Option<String>, Option<String>) {
             .args(["/C", &format!("{tool} --version")])
             .creation_flags(CREATE_NO_WINDOW)
             .output()
+            .await
     };
 
     #[cfg(not(target_os = "windows"))]
@@ -202,6 +203,7 @@ fn try_get_version(tool: &str) -> (Option<String>, Option<String>) {
             .arg("-c")
             .arg(format!("{tool} --version"))
             .output()
+            .await
     };
 
     match output {
@@ -243,8 +245,8 @@ fn is_valid_wsl_distro_name(name: &str) -> bool {
 }
 
 #[cfg(target_os = "windows")]
-fn try_get_version_wsl(tool: &str, distro: &str) -> (Option<String>, Option<String>) {
-    use std::process::Command;
+async fn try_get_version_wsl(tool: &str, distro: &str) -> (Option<String>, Option<String>) {
+    use tokio::process::Command;
 
     // 防御性断言：tool 只能是预定义的值
     debug_assert!(
@@ -267,7 +269,8 @@ fn try_get_version_wsl(tool: &str, distro: &str) -> (Option<String>, Option<Stri
             &format!("{tool} --version"),
         ])
         .creation_flags(CREATE_NO_WINDOW)
-        .output();
+        .output()
+        .await;
 
     match output {
         Ok(out) => {
@@ -306,7 +309,7 @@ fn try_get_version_wsl(tool: &str, distro: &str) -> (Option<String>, Option<Stri
 /// 注意：此函数实际上不会被调用，因为 `wsl_distro_from_path` 在非 Windows 平台总是返回 None。
 /// 保留此函数是为了保持 API 一致性，防止未来重构时遗漏。
 #[cfg(not(target_os = "windows"))]
-fn try_get_version_wsl(_tool: &str, _distro: &str) -> (Option<String>, Option<String>) {
+async fn try_get_version_wsl(_tool: &str, _distro: &str) -> (Option<String>, Option<String>) {
     (
         None,
         Some("WSL check not supported on this platform".to_string()),
@@ -314,8 +317,8 @@ fn try_get_version_wsl(_tool: &str, _distro: &str) -> (Option<String>, Option<St
 }
 
 /// 扫描常见路径查找 CLI
-fn scan_cli_version(tool: &str) -> (Option<String>, Option<String>) {
-    use std::process::Command;
+async fn scan_cli_version(tool: &str) -> (Option<String>, Option<String>) {
+    use tokio::process::Command;
 
     let home = dirs::home_dir().unwrap_or_default();
 
@@ -348,11 +351,11 @@ fn scan_cli_version(tool: &str) -> (Option<String>, Option<String>) {
 
     // 添加 fnm 路径支持
     let fnm_base = home.join(".local/state/fnm_multishells");
-    if fnm_base.exists() {
-        if let Ok(entries) = std::fs::read_dir(&fnm_base) {
-            for entry in entries.flatten() {
+    if tokio::fs::try_exists(&fnm_base).await.unwrap_or(false) {
+        if let Ok(mut entries) = tokio::fs::read_dir(&fnm_base).await {
+            while let Ok(Some(entry)) = entries.next_entry().await {
                 let bin_path = entry.path().join("bin");
-                if bin_path.exists() {
+                if tokio::fs::try_exists(&bin_path).await.unwrap_or(false) {
                     search_paths.push(bin_path);
                 }
             }
@@ -361,11 +364,11 @@ fn scan_cli_version(tool: &str) -> (Option<String>, Option<String>) {
 
     // 扫描 nvm 目录下的所有 node 版本
     let nvm_base = home.join(".nvm/versions/node");
-    if nvm_base.exists() {
-        if let Ok(entries) = std::fs::read_dir(&nvm_base) {
-            for entry in entries.flatten() {
+    if tokio::fs::try_exists(&nvm_base).await.unwrap_or(false) {
+        if let Ok(mut entries) = tokio::fs::read_dir(&nvm_base).await {
+            while let Ok(Some(entry)) = entries.next_entry().await {
                 let bin_path = entry.path().join("bin");
-                if bin_path.exists() {
+                if tokio::fs::try_exists(&bin_path).await.unwrap_or(false) {
                     search_paths.push(bin_path);
                 }
             }
@@ -388,7 +391,7 @@ fn scan_cli_version(tool: &str) -> (Option<String>, Option<String>) {
             path.join(tool)
         };
 
-        if tool_path.exists() {
+        if tokio::fs::try_exists(&tool_path).await.unwrap_or(false) {
             // 构建 PATH 环境变量，确保 node 可被找到
             let current_path = std::env::var("PATH").unwrap_or_default();
 
@@ -406,6 +409,7 @@ fn scan_cli_version(tool: &str) -> (Option<String>, Option<String>) {
                     .env("PATH", &new_path)
                     .creation_flags(CREATE_NO_WINDOW)
                     .output()
+                    .await
             };
 
             #[cfg(not(target_os = "windows"))]
@@ -414,6 +418,7 @@ fn scan_cli_version(tool: &str) -> (Option<String>, Option<String>) {
                     .arg("--version")
                     .env("PATH", &new_path)
                     .output()
+                    .await
             };
 
             if let Ok(out) = output {
@@ -698,6 +703,7 @@ end tell"#,
 
     Ok(())
 }
+
 
 /// macOS: iTerm2
 #[cfg(target_os = "macos")]
