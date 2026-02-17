@@ -85,23 +85,27 @@ pub async fn get_config_dir(app: String) -> Result<String, String> {
 /// 打开配置文件夹
 #[tauri::command]
 pub async fn open_config_folder(handle: AppHandle, app: String) -> Result<bool, String> {
-    let config_dir = match AppType::from_str(&app).map_err(|e| e.to_string())? {
-        AppType::Claude => config::get_claude_config_dir(),
-        AppType::Codex => codex_config::get_codex_config_dir(),
-        AppType::Gemini => crate::gemini_config::get_gemini_dir(),
-        AppType::OpenCode => crate::opencode_config::get_opencode_dir(),
-    };
+    tauri::async_runtime::spawn_blocking(move || {
+        let config_dir = match AppType::from_str(&app).map_err(|e| e.to_string())? {
+            AppType::Claude => config::get_claude_config_dir(),
+            AppType::Codex => codex_config::get_codex_config_dir(),
+            AppType::Gemini => crate::gemini_config::get_gemini_dir(),
+            AppType::OpenCode => crate::opencode_config::get_opencode_dir(),
+        };
 
-    if !config_dir.exists() {
-        std::fs::create_dir_all(&config_dir).map_err(|e| format!("创建目录失败: {e}"))?;
-    }
+        if !config_dir.exists() {
+            std::fs::create_dir_all(&config_dir).map_err(|e| format!("创建目录失败: {e}"))?;
+        }
 
-    handle
-        .opener()
-        .open_path(config_dir.to_string_lossy().to_string(), None::<String>)
-        .map_err(|e| format!("打开文件夹失败: {e}"))?;
+        handle
+            .opener()
+            .open_path(config_dir.to_string_lossy().to_string(), None::<String>)
+            .map_err(|e| format!("打开文件夹失败: {e}"))?;
 
-    Ok(true)
+        Ok(true)
+    })
+    .await
+    .map_err(|e| format!("Task failed: {e}"))?
 }
 
 /// 弹出系统目录选择器并返回用户选择的路径
@@ -146,18 +150,22 @@ pub async fn get_app_config_path() -> Result<String, String> {
 /// 打开应用配置文件夹
 #[tauri::command]
 pub async fn open_app_config_folder(handle: AppHandle) -> Result<bool, String> {
-    let config_dir = config::get_app_config_dir();
+    tauri::async_runtime::spawn_blocking(move || {
+        let config_dir = config::get_app_config_dir();
 
-    if !config_dir.exists() {
-        std::fs::create_dir_all(&config_dir).map_err(|e| format!("创建目录失败: {e}"))?;
-    }
+        if !config_dir.exists() {
+            std::fs::create_dir_all(&config_dir).map_err(|e| format!("创建目录失败: {e}"))?;
+        }
 
-    handle
-        .opener()
-        .open_path(config_dir.to_string_lossy().to_string(), None::<String>)
-        .map_err(|e| format!("打开文件夹失败: {e}"))?;
+        handle
+            .opener()
+            .open_path(config_dir.to_string_lossy().to_string(), None::<String>)
+            .map_err(|e| format!("打开文件夹失败: {e}"))?;
 
-    Ok(true)
+        Ok(true)
+    })
+    .await
+    .map_err(|e| format!("Task failed: {e}"))?
 }
 
 /// 获取 Claude 通用配置片段（已废弃，使用 get_common_config_snippet）
