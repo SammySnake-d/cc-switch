@@ -537,7 +537,7 @@ impl RequestForwarder {
     }
 
     /// 转发单个请求（使用适配器）
-    /// 
+    ///
     /// 返回 (Response, 原始模型, 映射后模型)
     async fn forward(
         &self,
