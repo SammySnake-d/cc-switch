@@ -40,8 +40,7 @@ use crate::proxy::types::AppProxyConfig;
 use rusqlite::Connection;
 use serde::Serialize;
 use std::collections::HashMap;
-use std::sync::{Mutex, RwLock};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, RwLock};
 
 // DAO 方法通过 impl Database 提供，无需额外导出
 
@@ -74,11 +73,9 @@ pub(crate) use lock_conn;
 ///
 /// 使用 Mutex 包装 Connection 以支持在多线程环境（如 Tauri State）中共享。
 /// rusqlite::Connection 本身不是 Sync 的，因此需要这层包装。
-#[derive(Clone)]
 pub struct Database {
-    pub(crate) conn: Mutex<Connection>,
-    pub(crate) app_config_cache: RwLock<HashMap<String, AppProxyConfig>>,
     pub(crate) conn: Arc<Mutex<Connection>>,
+    pub(crate) app_config_cache: RwLock<HashMap<String, AppProxyConfig>>,
 }
 
 impl Database {
@@ -100,9 +97,8 @@ impl Database {
             .map_err(|e| AppError::Database(e.to_string()))?;
 
         let db = Self {
-            conn: Mutex::new(conn),
-            app_config_cache: RwLock::new(HashMap::new()),
             conn: Arc::new(Mutex::new(conn)),
+            app_config_cache: RwLock::new(HashMap::new()),
         };
         db.create_tables()?;
         db.apply_schema_migrations()?;
@@ -120,9 +116,8 @@ impl Database {
             .map_err(|e| AppError::Database(e.to_string()))?;
 
         let db = Self {
-            conn: Mutex::new(conn),
-            app_config_cache: RwLock::new(HashMap::new()),
             conn: Arc::new(Mutex::new(conn)),
+            app_config_cache: RwLock::new(HashMap::new()),
         };
         db.create_tables()?;
         db.ensure_model_pricing_seeded()?;

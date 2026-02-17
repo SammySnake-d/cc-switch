@@ -531,15 +531,15 @@ impl Database {
         let app_type = app_type.to_string();
         let conn_arc = self.conn.clone();
 
-        let result = tokio::task::spawn_blocking(move || {
+        tokio::task::spawn_blocking(move || {
             let conn = lock_conn!(conn_arc);
 
-            conn.query_row(
+            match conn.query_row(
                 "SELECT provider_id, app_type, is_healthy, consecutive_failures,
                         last_success_at, last_failure_at, last_error, updated_at
                  FROM provider_health
                  WHERE provider_id = ?1 AND app_type = ?2",
-                rusqlite::params![provider_id, app_type],
+                rusqlite::params![&provider_id, &app_type],
                 |row| {
                     Ok(ProviderHealth {
                         provider_id: row.get(0)?,
@@ -552,26 +552,24 @@ impl Database {
                         updated_at: row.get(7)?,
                     })
                 },
-            )
+            ) {
+                Ok(health) => Ok(health),
+                // 缺少记录时视为健康（关闭后清空状态，再次打开时默认正常）
+                Err(rusqlite::Error::QueryReturnedNoRows) => Ok(ProviderHealth {
+                    provider_id,
+                    app_type,
+                    is_healthy: true,
+                    consecutive_failures: 0,
+                    last_success_at: None,
+                    last_failure_at: None,
+                    last_error: None,
+                    updated_at: chrono::Utc::now().to_rfc3339(),
+                }),
+                Err(e) => Err(AppError::Database(e.to_string())),
+            }
         })
         .await
-        .map_err(|e| AppError::Database(format!("Spawn blocking failed: {e}")))?;
-
-        match result {
-            Ok(health) => Ok(health),
-            // 缺少记录时视为健康（关闭后清空状态，再次打开时默认正常）
-            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(ProviderHealth {
-                provider_id: provider_id.to_string(),
-                app_type: app_type.to_string(),
-                is_healthy: true,
-                consecutive_failures: 0,
-                last_success_at: None,
-                last_failure_at: None,
-                last_error: None,
-                updated_at: chrono::Utc::now().to_rfc3339(),
-            }),
-            Err(e) => Err(AppError::Database(e.to_string())),
-        }
+        .map_err(|e| AppError::Database(format!("Spawn blocking failed: {e}")))?
     }
 
     /// 更新Provider健康状态
