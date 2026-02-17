@@ -15,10 +15,11 @@ impl Database {
     ///
     /// 从 claude 行读取（三行镜像一致）
     pub async fn get_global_proxy_config(&self) -> Result<GlobalProxyConfig, AppError> {
-        // 使用 block 限制 conn 的作用域，避免跨 await 持有锁
-        let result = {
-            let conn = lock_conn!(self.conn);
-            conn.query_row(
+        let conn = self.conn.clone();
+        // 使用 spawn_blocking 避免阻塞 async 运行时
+        let result = tokio::task::spawn_blocking(move || {
+            let conn = lock_conn!(conn);
+            match conn.query_row(
                 "SELECT proxy_enabled, listen_address, listen_port, enable_logging
                  FROM proxy_config WHERE app_type = 'claude'",
                 [],
@@ -30,13 +31,18 @@ impl Database {
                         enable_logging: row.get::<_, i32>(3)? != 0,
                     })
                 },
-            )
-        };
-        // conn 已在 block 结束时释放
+            ) {
+                Ok(config) => Ok(Some(config)),
+                Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+                Err(e) => Err(AppError::Database(e.to_string())),
+            }
+        })
+        .await
+        .map_err(|e| AppError::Database(format!("JoinError: {e}")))?;
 
-        match result {
-            Ok(config) => Ok(config),
-            Err(rusqlite::Error::QueryReturnedNoRows) => {
+        match result? {
+            Some(config) => Ok(config),
+            None => {
                 // 如果不存在，创建默认配置
                 self.init_proxy_config_rows().await?;
                 Ok(GlobalProxyConfig {
@@ -46,7 +52,6 @@ impl Database {
                     enable_logging: true,
                 })
             }
-            Err(e) => Err(AppError::Database(e.to_string())),
         }
     }
 
@@ -926,6 +931,36 @@ mod tests {
                 ..
             }
         ));
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_get_global_proxy_config() -> Result<(), AppError> {
+        let db = Database::memory()?;
+
+        // Should return default config
+        let config = db.get_global_proxy_config().await?;
+        assert_eq!(config.listen_address, "127.0.0.1");
+        assert_eq!(config.listen_port, 15721);
+        assert!(!config.proxy_enabled);
+        assert!(config.enable_logging);
+
+        // Update config
+        let new_config = crate::proxy::types::GlobalProxyConfig {
+            proxy_enabled: true,
+            listen_address: "0.0.0.0".to_string(),
+            listen_port: 8080,
+            enable_logging: false,
+        };
+        db.update_global_proxy_config(new_config).await?;
+
+        // Should return updated config
+        let updated = db.get_global_proxy_config().await?;
+        assert_eq!(updated.listen_address, "0.0.0.0");
+        assert_eq!(updated.listen_port, 8080);
+        assert!(updated.proxy_enabled);
+        assert!(!updated.enable_logging);
 
         Ok(())
     }
