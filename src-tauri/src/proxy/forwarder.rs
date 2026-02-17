@@ -807,8 +807,8 @@ impl RequestForwarder {
 
         // 输出请求信息日志
         let tag = adapter.name();
-        // 实际发送到上游的模型（映射后）
-        let actual_model = filtered_body
+        // 从请求体中读取实际的模型字段（已经是映射后的）
+        let body_model = filtered_body
             .get("model")
             .and_then(|v| v.as_str())
             .unwrap_or("<none>");
@@ -818,10 +818,10 @@ impl RequestForwarder {
             if orig != mapped {
                 log::info!("[{tag}] >>> 请求 URL: {url} (原始模型={orig} → 实际模型={mapped})");
             } else {
-                log::info!("[{tag}] >>> 请求 URL: {url} (model={actual_model})");
+                log::info!("[{tag}] >>> 请求 URL: {url} (model={mapped})");
             }
         } else {
-            log::info!("[{tag}] >>> 请求 URL: {url} (model={actual_model})");
+            log::info!("[{tag}] >>> 请求 URL: {url} (model={body_model})");
         }
         if let Ok(body_str) = serde_json::to_string(&filtered_body) {
             log::debug!(
