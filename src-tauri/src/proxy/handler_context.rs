@@ -50,6 +50,8 @@ pub struct RequestContext {
     pub current_provider_id: String,
     /// 请求中的模型名称
     pub request_model: String,
+    /// 经过映射后实际使用的模型（如果有映射）
+    pub mapped_model: Option<String>,
     /// 日志标签（如 "Claude"、"Codex"、"Gemini"）
     pub tag: &'static str,
     /// 应用类型字符串（如 "claude"、"codex"、"gemini"）
@@ -157,6 +159,7 @@ impl RequestContext {
             providers,
             current_provider_id,
             request_model,
+            mapped_model: None,
             tag,
             app_type_str,
             app_type,
@@ -192,6 +195,16 @@ impl RequestContext {
     pub fn with_request_endpoint(mut self, endpoint: &str) -> Self {
         self.request_endpoint = endpoint.to_string();
         self
+    }
+
+    /// 设置映射后的模型（如果发生了模型映射）
+    pub fn set_mapped_model(&mut self, mapped_model: Option<String>) {
+        self.mapped_model = mapped_model;
+    }
+
+    /// 获取实际使用的模型（优先返回映射后的模型，否则返回原始模型）
+    pub fn get_actual_model(&self) -> &str {
+        self.mapped_model.as_deref().unwrap_or(&self.request_model)
     }
 
     /// 创建 RequestForwarder

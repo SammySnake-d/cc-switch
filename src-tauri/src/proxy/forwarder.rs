@@ -56,6 +56,10 @@ fn apply_rewrite_rule(obj: &mut serde_json::Map<String, Value>, path: &str, valu
 pub struct ForwardResult {
     pub response: Response,
     pub provider: Provider,
+    /// 客户端请求的原始模型名（映射前）
+    pub original_model: Option<String>,
+    /// 实际发送到上游的模型名（映射后）
+    pub mapped_model: Option<String>,
 }
 
 pub struct ForwardError {
@@ -177,7 +181,7 @@ impl RequestForwarder {
                 .forward(provider, endpoint, &body, &headers, adapter.as_ref())
                 .await
             {
-                Ok(response) => {
+                Ok((response, orig_model, final_model)) => {
                     // 成功：记录成功并更新熔断器
                     let _ = self
                         .router
@@ -231,6 +235,8 @@ impl RequestForwarder {
                     return Ok(ForwardResult {
                         response,
                         provider: provider.clone(),
+                        original_model: orig_model,
+                        mapped_model: final_model,
                     });
                 }
                 Err(e) => {
@@ -318,7 +324,7 @@ impl RequestForwarder {
                                 .forward(provider, endpoint, &body, &headers, adapter.as_ref())
                                 .await
                             {
-                                Ok(response) => {
+                                Ok((response, orig_model, final_model)) => {
                                     log::info!("[{app_type_str}] [RECT-002] 整流重试成功");
                                     // 记录成功
                                     let _ = self
@@ -376,6 +382,8 @@ impl RequestForwarder {
                                     return Ok(ForwardResult {
                                         response,
                                         provider: provider.clone(),
+                                        original_model: orig_model,
+                                        mapped_model: final_model,
                                     });
                                 }
                                 Err(retry_err) => {
@@ -529,6 +537,8 @@ impl RequestForwarder {
     }
 
     /// 转发单个请求（使用适配器）
+    ///
+    /// 返回 (Response, 原始模型, 映射后模型)
     async fn forward(
         &self,
         provider: &Provider,
@@ -536,7 +546,7 @@ impl RequestForwarder {
         body: &Value,
         headers: &axum::http::HeaderMap,
         adapter: &dyn ProviderAdapter,
-    ) -> Result<Response, ProxyError> {
+    ) -> Result<(Response, Option<String>, Option<String>), ProxyError> {
         // 使用适配器提取 base_url
         let base_url = adapter.extract_base_url(provider)?;
 
@@ -554,7 +564,7 @@ impl RequestForwarder {
         let mut url = adapter.build_url(&base_url, effective_endpoint);
 
         // 应用模型映射（根据适配器类型选择不同的映射器）
-        let (mapped_body, _original_model, _mapped_model) = if adapter.name() == "Codex" {
+        let (mapped_body, orig_model, final_model) = if adapter.name() == "Codex" {
             // Codex 使用专用映射器，支持 effort 组合映射
             super::codex_model_mapper::apply_codex_model_mapping(body.clone(), provider)
         } else {
@@ -797,11 +807,22 @@ impl RequestForwarder {
 
         // 输出请求信息日志
         let tag = adapter.name();
-        let request_model = filtered_body
-            .get("model")
-            .and_then(|v| v.as_str())
-            .unwrap_or("<none>");
-        log::info!("[{tag}] >>> 请求 URL: {url} (model={request_model})");
+        
+        // 如果发生了模型映射且模型确实改变，在日志中显示映射关系
+        if let (Some(ref orig), Some(ref mapped)) = (&orig_model, &final_model) if orig != mapped {
+            log::info!("[{tag}] >>> 请求 URL: {url} (原始模型={orig} → 实际模型={mapped})");
+        } else if final_model.is_some() || orig_model.is_some() {
+            // 有映射信息但模型相同，或只有部分信息，显示标准格式
+            let mapped = final_model.as_ref().or(orig_model.as_ref()).unwrap();
+            log::info!("[{tag}] >>> 请求 URL: {url} (model={mapped})");
+        } else {
+            // 无映射信息，从请求体读取模型
+            let body_model = filtered_body
+                .get("model")
+                .and_then(|v| v.as_str())
+                .unwrap_or("<none>");
+            log::info!("[{tag}] >>> 请求 URL: {url} (model={body_model})");
+        }
         if let Ok(body_str) = serde_json::to_string(&filtered_body) {
             log::debug!(
                 "[{tag}] >>> 请求体内容 ({}字节): {}",
@@ -825,7 +846,7 @@ impl RequestForwarder {
         let status = response.status();
 
         if status.is_success() {
-            Ok(response)
+            Ok((response, orig_model, final_model))
         } else {
             let status_code = status.as_u16();
             let body_text = response.text().await.ok();
