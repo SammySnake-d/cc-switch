@@ -203,51 +203,6 @@ export function ProviderList({
     return <ProviderEmptyState onCreate={onCreate} />;
   }
 
-  const renderProviderList = () => (
-    <DndContext
-      sensors={sensors}
-      collisionDetection={closestCenter}
-      onDragEnd={handleDragEnd}
-    >
-      <SortableContext
-        items={filteredProviders.map((provider) => provider.id)}
-        strategy={verticalListSortingStrategy}
-      >
-        <div className="space-y-3">
-          {filteredProviders.map((provider) => (
-            <SortableProviderCard
-              key={provider.id}
-              provider={provider}
-              isCurrent={provider.id === currentProviderId}
-              appId={appId}
-              isInConfig={isProviderInConfig(provider.id)}
-              onSwitch={onSwitch}
-              onEdit={onEdit}
-              onDelete={onDelete}
-              onRemoveFromConfig={onRemoveFromConfig}
-              onDuplicate={onDuplicate}
-              onConfigureUsage={onConfigureUsage}
-              onOpenWebsite={onOpenWebsite}
-              onOpenTerminal={onOpenTerminal}
-              onTest={appId !== "opencode" ? handleTest : undefined}
-              isTesting={isChecking(provider.id)}
-              isProxyRunning={isProxyRunning}
-              isProxyTakeover={isProxyTakeover}
-              // 故障转移相关：联动状态
-              isAutoFailoverEnabled={isFailoverModeActive}
-              failoverPriority={getFailoverPriority(provider.id)}
-              isInFailoverQueue={isInFailoverQueue(provider.id)}
-              onToggleFailover={(enabled) =>
-                handleToggleFailover(provider.id, enabled)
-              }
-              activeProviderId={activeProviderId}
-            />
-          ))}
-        </div>
-      </SortableContext>
-    </DndContext>
-  );
-
   return (
     <div className="mt-4 space-y-4">
       <AnimatePresence>
@@ -321,7 +276,48 @@ export function ProviderList({
           })}
         </div>
       ) : (
-        renderProviderList()
+        <DndContext
+          sensors={sensors}
+          collisionDetection={closestCenter}
+          onDragEnd={handleDragEnd}
+        >
+          <SortableContext
+            items={filteredProviders.map((provider) => provider.id)}
+            strategy={verticalListSortingStrategy}
+          >
+            <div className="space-y-3">
+              {filteredProviders.map((provider) => (
+                <SortableProviderCard
+                  key={provider.id}
+                  provider={provider}
+                  isCurrent={provider.id === currentProviderId}
+                  appId={appId}
+                  isInConfig={isProviderInConfig(provider.id)}
+                  onSwitch={onSwitch}
+                  onEdit={onEdit}
+                  onDelete={onDelete}
+                  onRemoveFromConfig={onRemoveFromConfig}
+                  onDuplicate={onDuplicate}
+                  onConfigureUsage={onConfigureUsage}
+                  onOpenWebsite={onOpenWebsite}
+                  onOpenTerminal={onOpenTerminal}
+                  onTest={appId !== "opencode" ? handleTest : undefined}
+                  isTesting={isChecking(provider.id)}
+                  isProxyRunning={isProxyRunning}
+                  isProxyTakeover={isProxyTakeover}
+                  // 故障转移相关：联动状态
+                  isAutoFailoverEnabled={isFailoverModeActive}
+                  failoverPriority={getFailoverPriority(provider.id)}
+                  isInFailoverQueue={isInFailoverQueue(provider.id)}
+                  onToggleFailover={(enabled) =>
+                    handleToggleFailover(provider.id, enabled)
+                  }
+                  activeProviderId={activeProviderId}
+                />
+              ))}
+            </div>
+          </SortableContext>
+        </DndContext>
       )}
     </div>
   );
