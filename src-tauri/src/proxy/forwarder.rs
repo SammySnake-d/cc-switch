@@ -809,24 +809,23 @@ impl RequestForwarder {
         let tag = adapter.name();
         
         // 如果发生了模型映射且模型确实改变，在日志中显示映射关系
-        if let (Some(ref orig), Some(ref mapped)) = (&orig_model, &final_model) {
-            if orig != mapped {
+        match (&orig_model, &final_model) {
+            (Some(orig), Some(mapped)) if orig != mapped => {
                 log::info!("[{tag}] >>> 请求 URL: {url} (原始模型={orig} → 实际模型={mapped})");
-            } else {
-                // 模型相同，显示标准格式
+            }
+            _ if final_model.is_some() || orig_model.is_some() => {
+                // 有映射信息但模型相同，或只有部分信息，显示标准格式
+                let mapped = final_model.as_ref().or(orig_model.as_ref()).unwrap();
                 log::info!("[{tag}] >>> 请求 URL: {url} (model={mapped})");
             }
-        } else if final_model.is_some() || orig_model.is_some() {
-            // 只有部分信息（如仅有 final_model），显示标准格式
-            let mapped = final_model.as_ref().or(orig_model.as_ref()).unwrap();
-            log::info!("[{tag}] >>> 请求 URL: {url} (model={mapped})");
-        } else {
-            // 无映射信息，从请求体读取模型
-            let body_model = filtered_body
-                .get("model")
-                .and_then(|v| v.as_str())
-                .unwrap_or("<none>");
-            log::info!("[{tag}] >>> 请求 URL: {url} (model={body_model})");
+            _ => {
+                // 无映射信息，从请求体读取模型
+                let body_model = filtered_body
+                    .get("model")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("<none>");
+                log::info!("[{tag}] >>> 请求 URL: {url} (model={body_model})");
+            }
         }
         if let Ok(body_str) = serde_json::to_string(&filtered_body) {
             log::debug!(
